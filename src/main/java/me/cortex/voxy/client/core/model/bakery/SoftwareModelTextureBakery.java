@@ -19,7 +19,6 @@ import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -216,11 +215,7 @@ public class SoftwareModelTextureBakery {
             layer = ItemBlockRenderTypes.getRenderLayer(state.getFluidState());
             isBlock = false;
         } else {
-            if (state.getBlock() instanceof LeavesBlock) {
-                layer = ChunkSectionLayer.SOLID;
-            } else {
-                layer = ItemBlockRenderTypes.getChunkRenderType(state);
-            }
+            layer = ItemBlockRenderTypes.getChunkRenderType(state);
         }
 
         //TODO: support block model entities
