@@ -359,7 +359,7 @@ public class Mapper {
             if (state.getBlock() instanceof LeavesBlock) {
                 this.opacity = 15;
             } else {
-                this.opacity = state.getLightDampening();
+                this.opacity = state.getLightBlock();
             }
         }
 
