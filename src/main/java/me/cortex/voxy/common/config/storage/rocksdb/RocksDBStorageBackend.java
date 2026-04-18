@@ -1,7 +1,7 @@
 package me.cortex.voxy.common.config.storage.rocksdb;
 
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
-import me.cortex.voxy.client.core.util.ExpansionUgly;
+import me.cortex.voxy.client.core.util.ExpansionUtil;
 import me.cortex.voxy.common.config.ConfigBuildCtx;
 import me.cortex.voxy.common.config.storage.StorageBackend;
 import me.cortex.voxy.common.config.storage.StorageConfig;
@@ -11,7 +11,10 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.rocksdb.*;
 
+import java.io.File;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -91,6 +94,7 @@ public class RocksDBStorageBackend extends StorageBackend {
         List<ColumnFamilyHandle> handles = new ArrayList<>();
 
         try {
+
             this.db = RocksDB.open(options,
                     path, cfDescriptors,
                     handles);
@@ -98,8 +102,6 @@ public class RocksDBStorageBackend extends StorageBackend {
             this.sectionReadOps = new ReadOptions();
             this.sectionWriteOps = new WriteOptions();
 
-            this.closeList.addAll(handles);
-            this.closeList.add(this.db);
             this.closeList.add(options);
             this.closeList.add(cfOpts);
             this.closeList.add(cfWorldSecOpts);
@@ -107,6 +109,7 @@ public class RocksDBStorageBackend extends StorageBackend {
             this.closeList.add(this.sectionWriteOps);
             this.closeList.add(filter);
             this.closeList.add(bCache);
+            this.closeList.addAll(handles);
 
             this.worldSections = handles.get(1);
             this.idMappings = handles.get(2);
@@ -118,19 +121,31 @@ public class RocksDBStorageBackend extends StorageBackend {
     }
 
     @Override
-    public void iterateStoredSectionPositions(LongConsumer consumer) {
+    public void iteratePositions(int level, LongConsumer consumer) {
         try (var stack = MemoryStack.stackPush()) {
-            ByteBuffer keyBuff = stack.calloc(8);
-            long keyBuffPtr = MemoryUtil.memAddress(keyBuff);
-            var iter = this.db.newIterator(this.worldSections, this.sectionReadOps);
-            iter.seekToFirst();
-            while (iter.isValid()) {
-                iter.key(keyBuff);
-                long key = Long.reverseBytes(MemoryUtil.memGetLong(keyBuffPtr));
-                consumer.accept(key);
-                iter.next();
+            try (var iter = this.db.newIterator(this.worldSections, this.sectionReadOps)) {
+                ByteBuffer keyBuff = stack.calloc(8);
+                long keyBuffPtr = MemoryUtil.memAddress(keyBuff);
+                //TODO: this can be optimized if needed by useing a prefix-seek https://github.com/facebook/rocksdb/wiki/Prefix-Seek
+
+                if (level != -1) {//-1 means iterate all
+                    var seekBuff = stack.calloc(8);
+                    MemoryUtil.memPutLong(MemoryUtil.memAddress(seekBuff), Long.reverseBytes(Integer.toUnsignedLong(level) << 60));
+                    iter.seek(seekBuff);//we seak to the first level
+                } else {
+                    iter.seekToFirst();
+                }
+                while (iter.isValid()) {
+                    keyBuff.clear();
+                    iter.key(keyBuff);
+                    long key = Long.reverseBytes(MemoryUtil.memGetLong(keyBuffPtr));
+                    if (level != -1 && WorldEngine.getLevel(key) != level) {
+                        break;
+                    }
+                    consumer.accept(key);
+                    iter.next();
+                }
             }
-            iter.close();
         }
     }
 
@@ -158,7 +173,6 @@ public class RocksDBStorageBackend extends StorageBackend {
         }
     }
 
-    //TODO: FIXME, use the ByteBuffer variant
     @Override
     public void setSectionData(long key, MemoryBuffer data) {
         try (var stack = MemoryStack.stackPush()) {
@@ -194,10 +208,11 @@ public class RocksDBStorageBackend extends StorageBackend {
 
     @Override
     public Int2ObjectOpenHashMap<byte[]> getIdMappingsData() {
-        var iterator = this.db.newIterator(this.idMappings);
         var out = new Int2ObjectOpenHashMap<byte[]>();
-        for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
-            out.put(bytesToInt(iterator.key()), iterator.value());
+        try (var iterator = this.db.newIterator(this.idMappings)) {
+            for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
+                out.put(bytesToInt(iterator.key()), iterator.value());
+            }
         }
         return out;
     }
@@ -214,7 +229,13 @@ public class RocksDBStorageBackend extends StorageBackend {
     @Override
     public void close() {
         this.flush();
+        //this.db.cancelAllBackgroundWork(true);//Rocksdb does this automatically (afak)
         this.closeList.forEach(AbstractImmutableNativeReference::close);
+        try {
+            this.db.closeE();
+        } catch (RocksDBException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static byte[] intToBytes(int i) {
@@ -259,8 +280,8 @@ public class RocksDBStorageBackend extends StorageBackend {
         }
         if (WorldEngine.POS_FORMAT_VERSION != 1) throw new IllegalStateException("TODO: UPDATE THIS");
         return  (key&(0xFL<<60)) |
-                ExpansionUgly.expand((key>>> 4)&((1L<<24)-1), 0b01010101010101010101010101010101_001001001001001001001001L) |
-                ExpansionUgly.expand((key>>>52)&0xFF,         0b00000000000000000000000000000000_100100100100100100100100L) |
-                ExpansionUgly.expand((key>>>28)&((1L<<24)-1), 0b10101010101010101010101010101010_010010010010010010010010L);
+                ExpansionUtil.expand((key>>> 4)&((1L<<24)-1), 0b01010101010101010101010101010101_001001001001001001001001L) |
+                ExpansionUtil.expand((key>>>52)&0xFF,         0b00000000000000000000000000000000_100100100100100100100100L) |
+                ExpansionUtil.expand((key>>>28)&((1L<<24)-1), 0b10101010101010101010101010101010_010010010010010010010010L);
     }
 }

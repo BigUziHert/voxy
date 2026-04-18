@@ -12,7 +12,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(Window.class)
 public class MixinWindow {
     @Inject(method = "<init>", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/platform/Window;setBootErrorCallback()V"))
-    private void injectInitWindow(WindowEventHandler eventHandler, ScreenManager monitorTracker, DisplayData settings, String fullscreenVideoMode, String title, CallbackInfo ci) {
+    private void voxy$injectInitWindow(WindowEventHandler eventHandler, ScreenManager screenManager, DisplayData displayData, String fullscreenVideoModeString, String title, CallbackInfo ci) {
         //System.load("C:\\Program Files\\RenderDoc\\renderdoc.dll");
 
         //Force the current thread priority to be realtime

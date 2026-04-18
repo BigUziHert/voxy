@@ -1,5 +1,5 @@
 plugins {
-    id 'fabric-loom' version "1.13-SNAPSHOT"
+    id 'fabric-loom' version "${loom_version}"
     id 'maven-publish'
 }
 
@@ -25,6 +25,21 @@ repositories {
             includeGroup "maven.modrinth"
         }
     }
+
+    exclusiveContent {
+        forRepository {
+            maven {
+                name "flashyreeseRepository"
+                url "https://maven.flashyreese.me/releases"
+            }
+        }
+        filter {
+            includeGroup "net.caffeinemc"
+        }
+    }
+
+
+
     maven { url = "https://maven.shedaniel.me/" }
     maven { url = "https://maven.terraformersmc.com/releases/" }
     maven { url = "https://repo.enonic.com/public/"}
@@ -111,12 +126,12 @@ dependencies {
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
 
-    modRuntimeOnlyMsk(fabricApi.module("fabric-api-base", project.fabric_version))
-    modRuntimeOnlyMsk(fabricApi.module("fabric-rendering-fluids-v1", project.fabric_version))
-    modRuntimeOnlyMsk(fabricApi.module("fabric-resource-loader-v0", project.fabric_version))
-    modRuntimeOnlyMsk(fabricApi.module("fabric-command-api-v2", project.fabric_version))
+    modRuntimeOnlyMsk(fabricApi.module("fabric-api-base", project.fabric_api_version))
+    modRuntimeOnlyMsk(fabricApi.module("fabric-rendering-fluids-v1", project.fabric_api_version))
+    modRuntimeOnlyMsk(fabricApi.module("fabric-resource-loader-v0", project.fabric_api_version))
+    modRuntimeOnlyMsk(fabricApi.module("fabric-command-api-v2", project.fabric_api_version))
 
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
     //TODO: this is to eventually not need sodium installed as atm its just used for parsing shaders
     modRuntimeOnlyMsk "maven.modrinth:sodium:mc1.20.1-0.5.13-fabric"
@@ -156,15 +171,6 @@ dependencies {
 
     modCompileOnly("maven.modrinth:vivecraft:1.20.1-1.3.2-fabric")
 
-    // modCompileOnly("maven.modrinth:flashback:rNCr1Rbs")
-
-    // implementation("maven.modrinth:DistantHorizonsApi:4.1.0")
-    // i know should be runtime only but BLAHHH
-    // modCompileOnly("com.seibel.distanthorizons:core:core-2.4.1-b-dev-1.20.1")
-    // modCompileOnly("com.seibel.distanthorizons:DistantHorizons:common-2.4.1-b-dev-1.20.1")
-    // modRuntimeOnlyMsk("com.seibel.distanthorizons:DistantHorizons:fabric-2.4.1-b-dev-1.20.1")
-    modCompileOnly("maven.modrinth:DistantHorizons:2.4.0-b-1.20.1")
-    modRuntimeOnlyMsk("maven.modrinth:DistantHorizons:2.4.0-b-1.20.1")
     modRuntimeOnlyMsk("maven.modrinth:indium:1.0.36+mc1.20.1")
 }
 
@@ -190,7 +196,7 @@ java {
     //withSourcesJar()
 }
 
-jar {
+tasks.jar {
     from("LICENSE") {
         rename { "${it}_${project.archives_base_name}"}
     }

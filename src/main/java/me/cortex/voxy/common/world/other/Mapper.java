@@ -8,7 +8,6 @@ import me.cortex.voxy.common.util.Pair;
 import me.cortex.voxy.common.world.other.Mapper.BiomeEntry;
 import me.cortex.voxy.common.world.other.Mapper.StateEntry;
 import net.minecraft.SharedConstants;
-import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.nbt.CompoundTag;
@@ -17,11 +16,15 @@ import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtOps;
 import net.minecraft.util.datafix.DataFixers;
 import net.minecraft.util.datafix.fixes.References;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
+
 import org.lwjgl.system.MemoryUtil;
 
 import java.io.ByteArrayInputStream;
@@ -88,6 +91,10 @@ public class Mapper {
 
     public static long withLight(long id, int light) {
         return (id&(~(0xFFL<<56)))|(Integer.toUnsignedLong(light&0xFF)<<56);
+    }
+
+    public static long withBlockBiome(long id, int block, int biome) {
+        return (id&(0xFFL<<56))|(Integer.toUnsignedLong(block)<<27)|(Integer.toUnsignedLong(biome)<<47);
     }
 
     public static long airWithLight(int light) {
@@ -189,8 +196,8 @@ public class Mapper {
         }
 
         entry = new StateEntry(this.blockId2stateEntry.size(), state);
-        this.block2stateEntry.put(state, entry);
         this.blockId2stateEntry.add(entry);
+        this.block2stateEntry.put(state, entry);
         this.blockLock.unlock();
 
         byte[] serialized = entry.serialize();
@@ -199,6 +206,7 @@ public class Mapper {
         buffer.rewind();
         this.storage.putIdMapping(entry.id | (BLOCK_STATE_TYPE<<30), buffer);
         MemoryUtil.memFree(buffer);
+        //this.storage.flush();
 
         if (this.newStateCallback!=null)this.newStateCallback.accept(entry);
         return entry;
@@ -212,8 +220,8 @@ public class Mapper {
             return entry;
         }
         entry = new BiomeEntry(this.biomeId2biomeEntry.size(), biome);
-        this.biome2biomeEntry.put(biome, entry);
         this.biomeId2biomeEntry.add(entry);
+        this.biome2biomeEntry.put(biome, entry);
         this.biomeLock.unlock();
 
         byte[] serialized = entry.serialize();
@@ -222,6 +230,7 @@ public class Mapper {
         buffer.rewind();
         this.storage.putIdMapping(entry.id | (BIOME_TYPE<<30), buffer);
         MemoryUtil.memFree(buffer);
+        //this.storage.flush();
 
         if (this.newBiomeCallback!=null)this.newBiomeCallback.accept(entry);
         return entry;
@@ -238,7 +247,6 @@ public class Mapper {
         return this.blockId2stateEntry.get(blockId).state;
     }
 
-    //TODO: replace lambda with a class cached lambda ref (cause doing this:: still does a lambda allocation)
     public int getIdForBlockState(BlockState state) {
         if (state.isAir()) {
             return 0;
@@ -358,7 +366,34 @@ public class Mapper {
             if (state.getBlock() instanceof LeavesBlock) {
                 this.opacity = 15;
             } else {
-                this.opacity = state.getLightBlock(Minecraft.getInstance().level, new BlockPos(0,0,0));
+                this.opacity = state.getLightBlock(new BlockGetter() {
+
+                    @Override
+                    public int getHeight() {
+                        return 0;
+                    }
+
+                    @Override
+                    public int getMinBuildHeight() {
+                        return 0;
+                    }
+
+                    @Override
+                    public BlockEntity getBlockEntity(BlockPos arg0) {
+                        return null;
+                    }
+
+                    @Override
+                    public BlockState getBlockState(BlockPos blockPos) {
+                        return state;
+                    }
+
+                    @Override
+                    public FluidState getFluidState(BlockPos blockPos) {
+                        return state.getFluidState();
+                    }
+                    
+                }, BlockPos.ZERO);
             }
         }
 

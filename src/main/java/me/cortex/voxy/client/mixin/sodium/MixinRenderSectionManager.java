@@ -42,7 +42,7 @@ public class MixinRenderSectionManager {
     @Inject(method = "<init>", at = @At("TAIL"))
     private void voxy$resetChunkTracker(ClientLevel level, int renderDistance, CommandList commandList, CallbackInfo ci) {
         if (level.levelRenderer != null) {
-            var system = ((IGetVoxyRenderSystem)(level.levelRenderer)).getVoxyRenderSystem();
+            var system = ((IGetVoxyRenderSystem)(level.levelRenderer)).voxy$getRenderSystem();
             if (system != null) {
                 system.chunkBoundRenderer.reset();
             }
@@ -51,7 +51,7 @@ public class MixinRenderSectionManager {
     }
 
     @Inject(method = "onChunkRemoved", at = @At("HEAD"))
-    private void injectIngest(int x, int z, CallbackInfo ci) {
+    private void voxy$injectIngest(int x, int z, CallbackInfo ci) {
         //TODO: Am not quite sure if this is right
         if (VoxyConfig.CONFIG.ingestEnabled && !BOBBY_INSTALLED) {
             var cccm = (ICheekyClientChunkCache)this.world.getChunkSource();
@@ -106,7 +106,7 @@ public class MixinRenderSectionManager {
         if (flags == 0)//Only process things with stuff
             return;
 
-        VoxyRenderSystem system = ((IGetVoxyRenderSystem)(this.world.levelRenderer)).getVoxyRenderSystem();
+        VoxyRenderSystem system = ((IGetVoxyRenderSystem)(this.world.levelRenderer)).voxy$getRenderSystem();
         if (system == null) {
             return;
         }
@@ -125,15 +125,16 @@ public class MixinRenderSectionManager {
                 var section = this.world.getChunk(x,z).getSection(y-this.bottomSectionY);
                 var lp = this.world.getLightEngine();
 
-                var csp = SectionPos.of(x,y,z);
+                var csp = SectionPos.of(x, y, z);
                 var blp = lp.getLayerListener(LightLayer.BLOCK).getDataLayerData(csp);
                 var slp = lp.getLayerListener(LightLayer.SKY).getDataLayerData(csp);
 
                 //Note: we dont do this check and just blindly ingest, it shouldbe ok :tm:
                 //if (blp != null || slp != null)
-                    VoxelIngestService.rawIngest(system.getEngine(), section, x,y,z, blp==null?null:blp.copy(), slp==null?null:slp.copy());
+                    VoxelIngestService.rawIngest(system.getEngine(), section, x, y, z, blp == null ? null : blp.copy(), slp == null ? null : slp.copy());
             }
         }
+        
 
         //Do some very cheeky stuff for MiB
         if (VoxyCommon.IS_MINE_IN_ABYSS) {
@@ -146,8 +147,32 @@ public class MixinRenderSectionManager {
             //TODO: on chunk remove do ingest if is surrounded by built chunks (or when the tracker says is ok)
 
             system.chunkBoundRenderer.removeSection(pos);
-        } else {//Add
+        } else {//Add — chunk newly built for the first time
             system.chunkBoundRenderer.addSection(pos);
+
+            // FIX: ingest newly explored chunks here, where Sodium has already compiled
+            // the geometry and lighting is guaranteed to be available. The onChunkAdded
+            // hook fires too early (before lighting arrives for freshly generated chunks).
+            if (VoxyConfig.CONFIG.ingestEnabled) {
+                var tracker = ((AccessorChunkTracker)ChunkTrackerHolder.get(this.world)).getChunkStatus();
+                long key = ChunkPos.asLong(x, z);
+                if (key != this.cachedChunkPos) {
+                    this.cachedChunkPos = key;
+                    this.cachedChunkStatus = tracker.getOrDefault(key, 0);
+                }
+                // Status 3 = chunk has all surrounding neighbours loaded (LIGHT_AND_BIOMES),
+                // so lighting is complete and safe to read.
+                if (this.cachedChunkStatus == 3) {
+                    var section = this.world.getChunk(x, z).getSection(y - this.bottomSectionY);
+                    var lp = this.world.getLightEngine();
+                    var csp = SectionPos.of(x, y, z);
+                    var blp = lp.getLayerListener(LightLayer.BLOCK).getDataLayerData(csp);
+                    var slp = lp.getLayerListener(LightLayer.SKY).getDataLayerData(csp);
+                    VoxelIngestService.rawIngest(system.getEngine(), section, x, y, z,
+                            blp == null ? null : blp.copy(),
+                            slp == null ? null : slp.copy());
+                }
+            }
         }
         return;
     }

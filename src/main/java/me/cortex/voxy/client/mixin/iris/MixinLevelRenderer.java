@@ -10,6 +10,7 @@ import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.LightTexture;
 
 import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
 import org.joml.Vector4f;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -38,7 +39,7 @@ public class MixinLevelRenderer {
             Matrix4f projectionMatrix,
             CallbackInfo ci) {
         if (IrisUtil.irisShaderPackEnabled()) {
-            var renderer = ((IGetVoxyRenderSystem) this).getVoxyRenderSystem();
+            var renderer = ((IGetVoxyRenderSystem) this).voxy$getRenderSystem();
             if (renderer != null) {
                 //Fixthe fucking viewport dims, fuck iris
                 glViewport(0,0,Minecraft.getInstance().getMainRenderTarget().width, Minecraft.getInstance().getMainRenderTarget().height);

@@ -38,20 +38,35 @@ layout(location = 0) out vec4 outColour;
 #endif
 
 #import <voxy:lod/gl46/bindings.glsl>
+#import <voxy:lod/lighting.glsl>
 
 vec4 uint2vec4RGBA(uint colour) {
     return vec4((uvec4(colour)>>uvec4(24,16,8,0))&uvec4(0xFF))/255.0;
 }
 
-bool useMipmaps() {
-    return (interData.x&2u)==0u;
+uint unpackAlpha8(float alpha) {
+    return uint(round(clamp(alpha, 0.0, 1.0) * 255.0));
 }
+
+bool sampleTintMask(vec2 texturePos) {
+    return (unpackAlpha8(textureLod(blockModelAtlas, texturePos, 0).a) & 1u) != 0u;
+}
+
+vec4 clearTintMaskFromColour(vec4 colour) {
+    float alpha = float(unpackAlpha8(colour.a) & 0xFEu);
+    colour.a = alpha / 255.0;
+    return colour;
+}
+
+//bool useMipmaps() {
+//    return (interData.x&2u)==0u;
+//}
 
 uint tintingState() {
     return (interData.x>>2)&3u;
 }
 
-bool useCutout() {
+bool useDiscard() {
     return (interData.x&1u)==1u;
 }
 
@@ -59,11 +74,6 @@ uint getFace() {
     return (interData.x>>4)&7u;
 }
 
-#ifdef PATCHED_SHADER
-vec2 getLightmap() {
-    return clamp(vec2((interData.y>>4)&0xFu, interData.y&0xFu)/15, vec2(8.0f/256), vec2(248.0f/256));
-}
-#endif
 
 uint getModelId() {
     return interData.x>>16;
@@ -94,15 +104,13 @@ void voxy_emitFragment(VoxyFragmentParameters parameters);
 #else
 
 vec4 computeColour(vec2 texturePos, vec4 colour) {
-    //Conditional tinting, TODO: FIXME: this is better but still not great, try encode data into the top bit of alpha so its per pixel
+    // Partial tint faces carry an exact per-pixel tint marker in the low bit of
+    // the base-level alpha channel. That avoids guessing from grayscale colour.
 
     uint tintingFunction = tintingState();
     bool doTint = tintingFunction==2;//Always tint if function == 2
     if (tintingFunction == 1) {//partial tint
-        vec4 tintTest = textureLod(blockModelAtlas, texturePos, 0);
-        if (abs(tintTest.r-tintTest.g) < 0.02f && abs(tintTest.g-tintTest.b) < 0.02f) {
-            doTint = true;
-        }
+        doTint = sampleTintMask(texturePos);
     }
     if (doTint) {
         colour *= uint2vec4RGBA(interData.z).yzwx;
@@ -129,14 +137,17 @@ void main() {
     vec2 uv2 = modf(uv, tile)*(1.0/(vec2(3.0,2.0)*256.0));
     vec4 colour;
     vec2 texPos = uv2 + getBaseUV();
-    if (useMipmaps()) {
+//This is deprecated, TODO: remove the non mip code path
+    //if (useMipmaps())
+    {
         vec2 uvSmol = uv*(1.0/(vec2(3.0,2.0)*256.0));
         vec2 dx = dFdx(uvSmol);//vec2(lDx, dDx);
         vec2 dy = dFdy(uvSmol);//vec2(lDy, dDy);
         colour = textureGrad(blockModelAtlas, texPos, dx, dy);
-    } else {
-        colour = textureLod(blockModelAtlas, texPos, 0);
-    }
+        colour = clearTintMaskFromColour(colour);
+    }// else {
+    //    colour = textureLod(blockModelAtlas, texPos, 0);
+    //}
 
     //If we are in shaders and are a helper invocation, just exit, as it enables extra performance gains for small sized
     // fragments, we do this here after derivative computation
@@ -162,7 +173,13 @@ void main() {
 
 
     //Also, small quad is really fking over the mipping level somehow
-    if (useCutout() && (textureLod(blockModelAtlas, texPos, 0).a <= 0.1f)) {
+    #ifndef TRANSLUCENT
+    colour.a = 1.0f;
+    if (useDiscard() && (textureLod(blockModelAtlas, texPos, 0).a <= 0.1f)) {
+    //if (useDiscard() && (colour.a <= 0.1f)) {
+    #else
+    if (textureLod(blockModelAtlas, texPos, 0).a == 0.0f) {
+    #endif
         //This is stupidly stupidly bad for divergence
         //TODO: FIXME, basicly what this do is sample the exact pixel (no lod) for discarding, this stops mipmapping fucking it over
         #ifndef DEBUG_RENDER
@@ -196,10 +213,7 @@ void main() {
     uint tintingFunction = tintingState();
     bool doTint = tintingFunction==2;//Always tint if function == 2
     if (tintingFunction==1) {//Partial tint
-        vec4 tintTest = texture(blockModelAtlas, texPos, -2);
-        if (abs(tintTest.r-tintTest.g) < 0.02f && abs(tintTest.g-tintTest.b) < 0.02f) {
-            doTint = true;
-        }
+        doTint = sampleTintMask(texPos);
     }
     vec4 tint = vec4(1);
     if (doTint) {
@@ -208,7 +222,7 @@ void main() {
 
     uint face = getFace();
     face ^= uint((face&1u)!=uint(gl_FrontFacing!=((face>>1)!=0u)));
-    voxy_emitFragment(VoxyFragmentParameters(colour, tile, texPos, face, modelId, getLightmap(), tint, model.customId));
+    voxy_emitFragment(VoxyFragmentParameters(colour, tile, texPos, face, modelId, getLightmapUv(interData.y), tint, model.customId));
 
     #endif
 }

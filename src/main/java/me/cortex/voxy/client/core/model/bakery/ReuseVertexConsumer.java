@@ -2,21 +2,31 @@ package me.cortex.voxy.client.core.model.bakery;
 
 
 import me.cortex.voxy.common.util.MemoryBuffer;
+import net.minecraft.client.model.geom.builders.UVPair;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import org.lwjgl.system.MemoryUtil;
-
-import static me.cortex.voxy.client.core.model.bakery.BudgetBufferRenderer.VERTEX_FORMAT_SIZE;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
 
 public final class ReuseVertexConsumer implements VertexConsumer {
+    public static final int VERTEX_FORMAT_SIZE = 24;
     private MemoryBuffer buffer = new MemoryBuffer(8192);
     private long ptr;
     private int count;
     private int defaultMeta;
 
+    public boolean anyShaded;
+    public boolean anyDarkendTex;
+    public boolean anyDiscard;
+
+    private final int globalOrMetadata;
     public ReuseVertexConsumer() {
+        this(0);
+    }
+    public ReuseVertexConsumer(int globalOrMetadata) {
         this.reset();
+        this.globalOrMetadata = globalOrMetadata;
     }
 
     public ReuseVertexConsumer setDefaultMeta(int meta) {
@@ -24,11 +34,15 @@ public final class ReuseVertexConsumer implements VertexConsumer {
         return this;
     }
 
+    public int getDefaultMeta() {
+        return this.defaultMeta;
+    }
+
     @Override
     public ReuseVertexConsumer vertex(double x, double y, double z) {
         this.ensureCanPut();
         this.ptr += VERTEX_FORMAT_SIZE; this.count++; //Goto next vertex
-        this.meta(this.defaultMeta);
+        this.meta(this.defaultMeta | this.globalOrMetadata);
         MemoryUtil.memPutFloat(this.ptr, (float) x);
         MemoryUtil.memPutFloat(this.ptr + 4, (float) y);
         MemoryUtil.memPutFloat(this.ptr + 8, (float) z);
@@ -36,6 +50,7 @@ public final class ReuseVertexConsumer implements VertexConsumer {
     }
 
     public ReuseVertexConsumer meta(int metadata) {
+        this.anyDiscard |= (metadata&1)!=0;
         MemoryUtil.memPutInt(this.ptr + 12, metadata);
         return this;
     }
@@ -67,19 +82,25 @@ public final class ReuseVertexConsumer implements VertexConsumer {
         return this;
     }
 
-    public ReuseVertexConsumer quad(BakedQuad quad, int metadata) {
-        this.ensureCanPut();
-        int[] data = quad.getVertices();
-        for (int i = 0; i < 4; i++) {
-            float x = Float.intBitsToFloat(data[i * 8]);
-            float y = Float.intBitsToFloat(data[i * 8 + 1]);
-            float z = Float.intBitsToFloat(data[i * 8 + 2]);
-            this.vertex(x,y,z);
-            float u = Float.intBitsToFloat(data[i * 8 + 4]);
-            float v = Float.intBitsToFloat(data[i * 8 + 5]);
-            this.uv(u,v);
+    public ReuseVertexConsumer quad(BakedQuad quad, boolean forceSolid, RenderType layer) {
+        int meta = 0;
+        meta |= forceSolid?0:(layer!=RenderType.solid()?1:0);//has discard
+        meta |= quad.isTinted()?4:0;//has tinting
+        return this.quad(quad, meta);
+    }
 
-            this.meta(metadata);
+    public ReuseVertexConsumer quad(BakedQuad quad, int metadata) {
+        this.anyShaded |= quad.isShade();
+        this.anyDarkendTex |= false;// todo: what actually goes here??
+        this.ensureCanPut();
+        int[] vertices = quad.getVertices();
+        for (int i = 0; i < 4; i++) {
+            // look at FaceBakery
+            int j = i * 8;
+            this.vertex(Float.intBitsToFloat(vertices[j]), Float.intBitsToFloat(vertices[j + 1]), Float.intBitsToFloat(vertices[j + 2]));
+            this.uv(Float.intBitsToFloat(vertices[j + 4]), Float.intBitsToFloat(vertices[j + 5]));
+
+            this.meta(metadata|this.globalOrMetadata);
         }
         return this;
     }
@@ -98,6 +119,9 @@ public final class ReuseVertexConsumer implements VertexConsumer {
     }
 
     public ReuseVertexConsumer reset() {
+        this.anyShaded = false;
+        this.anyDarkendTex = false;
+        this.anyDiscard = false;
         this.defaultMeta = 0;//RESET THE DEFAULT META
         this.count = 0;
         this.ptr = this.buffer.address - VERTEX_FORMAT_SIZE;//the thing is first time this gets incremented by FORMAT_STRIDE
