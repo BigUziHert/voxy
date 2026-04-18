@@ -13,6 +13,8 @@
 @rem See the License for the specific language governing permissions and
 @rem limitations under the License.
 @rem
+@rem SPDX-License-Identifier: Apache-2.0
+@rem
 
 @if "%DEBUG%"=="" @echo off
 @rem ##########################################################################
@@ -22,7 +24,7 @@
 @rem ##########################################################################
 
 @rem Set local scope for the variables with windows NT shell
-if "%OS%"=="Windows_NT" setlocal
+if "%OS%"=="Windows_NT" setlocal EnableExtensions EnableDelayedExpansion
 
 set DIRNAME=%~dp0
 if "%DIRNAME%"=="" set DIRNAME=.
@@ -36,6 +38,9 @@ for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
 
+@rem Prefer a local Java 17 installation for this project, even if PATH points to a newer JDK.
+call :findPreferredJava17
+
 @rem Find java.exe
 if defined JAVA_HOME goto findJavaFromJavaHome
 
@@ -43,11 +48,11 @@ set JAVA_EXE=java.exe
 %JAVA_EXE% -version >NUL 2>&1
 if %ERRORLEVEL% equ 0 goto execute
 
-echo.
-echo ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
-echo.
-echo Please set the JAVA_HOME variable in your environment to match the
-echo location of your Java installation.
+echo. 1>&2
+echo ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH. 1>&2
+echo. 1>&2
+echo Please set the JAVA_HOME variable in your environment to match the 1>&2
+echo location of your Java installation. 1>&2
 
 goto fail
 
@@ -57,22 +62,61 @@ set JAVA_EXE=%JAVA_HOME%/bin/java.exe
 
 if exist "%JAVA_EXE%" goto execute
 
-echo.
-echo ERROR: JAVA_HOME is set to an invalid directory: %JAVA_HOME%
-echo.
-echo Please set the JAVA_HOME variable in your environment to match the
-echo location of your Java installation.
+echo. 1>&2
+echo ERROR: JAVA_HOME is set to an invalid directory: %JAVA_HOME% 1>&2
+echo. 1>&2
+echo Please set the JAVA_HOME variable in your environment to match the 1>&2
+echo location of your Java installation. 1>&2
 
 goto fail
+
+:findPreferredJava17
+set VOXY_JAVA_HOME=
+
+if defined VOXY_JAVA_HOME if exist "%VOXY_JAVA_HOME%\bin\java.exe" (
+    set JAVA_HOME=%VOXY_JAVA_HOME%
+    goto :eof
+)
+
+if defined JAVA_HOME if exist "%JAVA_HOME%\bin\java.exe" (
+    "%JAVA_HOME%\bin\java.exe" -version 2>&1 | findstr /C:" version \"17." >NUL
+    if %ERRORLEVEL% equ 0 goto :eof
+)
+
+for %%V in (JAVA_HOME_17_X64 JAVA17_HOME JDK17_HOME) do (
+    call set VOXY_JAVA_HOME=%%%V%%
+    if defined VOXY_JAVA_HOME if exist "!VOXY_JAVA_HOME!\bin\java.exe" (
+        set JAVA_HOME=!VOXY_JAVA_HOME!
+        goto :eof
+    )
+)
+
+if exist "C:\Program Files\Java\jdk-17\bin\java.exe" (
+    set JAVA_HOME=C:\Program Files\Java\jdk-17
+    goto :eof
+)
+
+for %%D in (
+    "C:\Program Files\Eclipse Adoptium\jdk-17*"
+    "C:\Program Files\Microsoft\jdk-17*"
+) do (
+    for /d %%J in (%%~D) do (
+        if exist "%%~fJ\bin\java.exe" (
+            set JAVA_HOME=%%~fJ
+            goto :eof
+        )
+    )
+)
+
+goto :eof
 
 :execute
 @rem Setup the command line
 
-set CLASSPATH=%APP_HOME%\gradle\wrapper\gradle-wrapper.jar
 
 
 @rem Execute Gradle
-"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*
+"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*
 
 :end
 @rem End local scope for the variables with windows NT shell

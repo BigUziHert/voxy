@@ -23,7 +23,7 @@ public class VoxyCommon implements ModInitializer {
             IS_IN_MINECRAFT = true;
             var version = mod.getMetadata().getVersion().getFriendlyString();
             var commit = mod.getMetadata().getCustomValue("commit").getAsString();
-            MOD_VERSION = version + "-" + commit;
+            MOD_VERSION = version + "-" + commit.substring(0,7);
             IS_DEDICATED_SERVER = FabricLoader.getInstance().getEnvironmentType() == EnvType.SERVER;
             Serialization.init();
         }
@@ -78,7 +78,10 @@ public class VoxyCommon implements ModInitializer {
         if (INSTANCE != null) {
             throw new IllegalStateException("Cannot create multiple instances");
         }
-        INSTANCE = FACTORY.create();
+        var instance = FACTORY.create();
+        if (instance != null) {
+            INSTANCE = instance;
+        }
     }
 
     //Is voxy available in any capacity

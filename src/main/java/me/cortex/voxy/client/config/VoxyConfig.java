@@ -3,6 +3,8 @@ package me.cortex.voxy.client.config;
 import com.google.gson.FieldNamingPolicy;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+
+import me.cortex.voxy.client.core.SSAO;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.jellysquid.mods.sodium.client.gui.options.storage.OptionStorage;
@@ -13,6 +15,7 @@ import java.io.IOException;
 import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 
 public class VoxyConfig implements OptionStorage<VoxyConfig> {
     private static final Gson GSON = new GsonBuilder()
@@ -21,6 +24,7 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
             .excludeFieldsWithModifiers(Modifier.PRIVATE)
             .create();
 
+    private static boolean LOADED_WHILE_UNAVAILABLE;
     public static VoxyConfig CONFIG = loadOrCreate();
 
     public boolean enabled = true;
@@ -29,9 +33,21 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
     public int sectionRenderDistance = 16;
     public int serviceThreads = (int) Math.max(Runtime.getRuntime().availableProcessors() * 2 / 1.5, 1);
     public float subDivisionSize = 64;
-    public boolean renderVanillaFog = false;
-    public boolean renderStatistics = false;
+    public boolean renderVanillaFog = true;
     public boolean dontUseSodiumBuilderThreads = false;
+
+    public String ssaoMode;
+
+    public SSAO.SSAOMode getSSAOMode() {
+        if (this.ssaoMode == null) return SSAO.SSAOMode.AUTO;
+        try {
+            return SSAO.SSAOMode.valueOf(this.ssaoMode.toUpperCase(Locale.ROOT));
+        } catch (Exception e) { return SSAO.SSAOMode.AUTO; }
+    }
+
+    public void setSSAOMode(SSAO.SSAOMode mode) {
+        this.ssaoMode = mode.name().toLowerCase(Locale.ROOT);
+    }
 
     private static VoxyConfig loadOrCreate() {
         if (VoxyCommon.isAvailable()) {
@@ -49,18 +65,31 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
                     Logger.error("Could not parse config", e);
                 }
             }
+            Logger.info("Config doesnt exist, creating new");
             var config = new VoxyConfig();
             config.save();
             return config;
-        } else {
-            var config = new VoxyConfig();
-            config.enabled = false;
-            config.enableRendering = false;
-            return config;
+        }
+        LOADED_WHILE_UNAVAILABLE = true;
+        var config = new VoxyConfig();
+        config.enabled = false;
+        config.enableRendering = false;
+        return config;
+    }
+
+    public static void reloadAfterVoxyAvailable() {
+        if (LOADED_WHILE_UNAVAILABLE && VoxyCommon.isAvailable()) {
+            LOADED_WHILE_UNAVAILABLE = false;
+            CONFIG = loadOrCreate();
         }
     }
 
     public void save() {
+        if (!VoxyCommon.isAvailable()) {
+            Logger.info("Not saving config since voxy is unavalible");
+            return;
+        }
+
         try {
             Files.writeString(getConfigPath(), GSON.toJson(this));
         } catch (IOException e) {

@@ -1,23 +1,22 @@
 package me.cortex.voxy.commonImpl.mixin.distanthorizons;
 
 import java.util.ArrayList;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import com.seibel.distanthorizons.core.api.internal.SharedApi;
-import com.seibel.distanthorizons.core.level.IDhLevel;
-import com.seibel.distanthorizons.core.wrapperInterfaces.chunk.IChunkWrapper;
-
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
 import net.minecraft.world.level.chunk.ChunkAccess;
-// import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 
-@Mixin(value = SharedApi.class, remap = false)
+@Pseudo
+@Mixin(targets = "com.seibel.distanthorizons.core.api.internal.SharedApi", remap = false)
 public class MixinSharedApi {
     @Inject(method = "queueChunkUpdate", at = @At(
         value = "NEW",
@@ -26,19 +25,14 @@ public class MixinSharedApi {
         remap = false
     )
     private static void beforeChunkUpdateCreation(
-            IChunkWrapper chunkWrapper,
-            ArrayList<IChunkWrapper> neighborChunkList,
-            IDhLevel dhLevel,
+            Object chunkWrapper,
+            ArrayList<?> neighborChunkList,
+            Object dhLevel,
             boolean canGetNeighboringChunks,
             CallbackInfo ci
     ) {
-        ChunkAccess chunkAccess;
-        if (chunkWrapper instanceof loaderCommon.fabric.com.seibel.distanthorizons.common.wrappers.chunk.ChunkWrapper cw) {
-            chunkAccess = cw.getChunk();
-        } else if (chunkWrapper instanceof loaderCommon.forge.com.seibel.distanthorizons.common.wrappers.chunk.ChunkWrapper cw) {
-            chunkAccess = cw.getChunk();
-        } else {
-            Logger.error("DH MixinSharedApi: Unknown chunk wrapper class: " + chunkWrapper.getClass().getName());
+        ChunkAccess chunkAccess = extractChunkAccess(chunkWrapper);
+        if (chunkAccess == null) {
             return;
         }
 
@@ -57,5 +51,21 @@ public class MixinSharedApi {
             // Logger.info("DH MixinSharedApi: Auto-ingest NOT triggered for chunk: " + chunkWrapper.getChunkPos());
         }
         // ci.cancel();
+    }
+
+    private static ChunkAccess extractChunkAccess(Object chunkWrapper) {
+        try {
+            Method getChunk = chunkWrapper.getClass().getMethod("getChunk");
+            Object chunk = getChunk.invoke(chunkWrapper);
+            if (chunk instanceof ChunkAccess chunkAccess) {
+                return chunkAccess;
+            }
+
+            Logger.error("DH MixinSharedApi: getChunk returned unexpected type: " + chunk.getClass().getName());
+        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+            Logger.error("DH MixinSharedApi: Failed to inspect chunk wrapper " + chunkWrapper.getClass().getName(), e);
+        }
+
+        return null;
     }
 }

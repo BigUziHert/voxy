@@ -70,6 +70,7 @@ public class Shader extends TrackedObject {
             J make(Builder<J> builder, int program);
         }
         final Map<String, String> defines = new HashMap<>();
+        final Map<String, String> replacements = new LinkedHashMap<>();
         private final Map<ShaderType, String> sources = new HashMap<>();
         private final IShaderProcessor processor;
         private final IShaderObjectConstructor<T> constructor;
@@ -110,8 +111,18 @@ public class Shader extends TrackedObject {
             return this;
         }
 
+        public Builder<T> define(String name, float value) {
+            this.defines.put(name, Float.toString(value)+"f");
+            return this;
+        }
+
         public Builder<T> define(String name, String value) {
             this.defines.put(name, value);
+            return this;
+        }
+
+        public Builder<T> replace(String value, String replacement) {
+            this.replacements.put(value, replacement);
             return this;
         }
 
@@ -139,6 +150,10 @@ public class Shader extends TrackedObject {
                     src = src.substring(0, src.indexOf('\n')+1) +
                             defs
                             + src.substring(src.indexOf('\n')+1);
+
+                    for (var replacement : this.replacements.entrySet()) {
+                        src = src.replace(replacement.getKey(), replacement.getValue());
+                    }
 
                     shaders[i++] = createShader(entry.getKey(), src);
                 }
@@ -181,7 +196,7 @@ public class Shader extends TrackedObject {
 
         private static int createShader(ShaderType type, String src) {
             int shader = GL20C.glCreateShader(type.gl);
-            {//https://github.com/CaffeineMC/sodium/blob/fc42a7b19836c98a35df46e63303608de0587ab6/src/main/java/me/jellysquid/mods/sodium/client/gl/shader/ShaderWorkarounds.java
+            {//https://github.com/CaffeineMC/sodium/blob/fc42a7b19836c98a35df46e63303608de0587ab6/src/main/java/net/caffeinemc/mods/sodium/client/gl/shader/ShaderWorkarounds.java
                 long ptr = MemoryUtil.memAddress(MemoryUtil.memUTF8(src, true));
                 try (var stack = MemoryStack.stackPush()) {
                     GL20C.nglShaderSource(shader, 1, stack.pointers(ptr).address0(), 0);

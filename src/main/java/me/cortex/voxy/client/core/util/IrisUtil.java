@@ -9,6 +9,8 @@ import net.irisshaders.iris.api.v0.IrisApi;
 import net.irisshaders.iris.gl.IrisRenderSystem;
 import net.irisshaders.iris.shadows.ShadowRenderer;
 
+import java.io.IOException;
+
 public class IrisUtil {
     public record CapturedViewportParameters(ChunkRenderMatrices matrices, double x, double y, double z) {
         public Viewport<?> apply(VoxyRenderSystem vrs) {
@@ -33,6 +35,19 @@ public class IrisUtil {
     public static void clearIrisSamplers() {
         if (IRIS_INSTALLED) clearIrisSamplers0();
     }
+    public static void reload() {
+        if (IRIS_INSTALLED) reload0();
+    }
+
+    private static void reload0() {
+        try {
+            if (IrisApi.getInstance().isShaderPackInUse()||IrisApi.getInstance().getConfig().areShadersEnabled()) {//Only reload if there is a shaderpack
+                Iris.reload();
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     private static void clearIrisSamplers0() {
         for (int i = 0; i < 16; i++) {
@@ -46,6 +61,12 @@ public class IrisUtil {
 
     public static boolean irisShaderPackEnabled() {
         return IRIS_INSTALLED && irisShaderPackEnabled0();
+    }
+    private static boolean irisShadersEnabledInConfig0() {
+        return !Iris.getCurrentPack().isEmpty();
+    }
+    public static boolean irisShadersEnabledInConfig() {
+        return IRIS_INSTALLED && irisShadersEnabledInConfig0();
     }
     public static void disableIrisShaders() {
         if(IRIS_INSTALLED) disableIrisShaders0();

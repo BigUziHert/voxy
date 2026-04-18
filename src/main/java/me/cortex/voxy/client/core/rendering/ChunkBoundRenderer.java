@@ -2,8 +2,6 @@ package me.cortex.voxy.client.core.rendering;
 
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import me.cortex.voxy.client.VoxyClient;
-import me.cortex.voxy.client.compat.SodiumExtra;
 import me.cortex.voxy.client.core.AbstractRenderPipeline;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.GlVertexArray;
@@ -55,17 +53,19 @@ public class ChunkBoundRenderer {
     private final AbstractRenderPipeline pipeline;
     public ChunkBoundRenderer(AbstractRenderPipeline pipeline) {
         this.chunk2idx.defaultReturnValue(-1);
-        this.pipeline = pipeline;
 
         String vert = ShaderLoader.parse("voxy:chunkoutline/outline.vsh");
         String taa = pipeline.taaFunction("getTAA");
         if (taa != null) {
+            this.pipeline = pipeline;
             vert = vert+"\n\n\n"+taa;
+        } else {
+            this.pipeline = null;
         }
+
         this.rasterShader = Shader.makeAuto()
                 .addSource(ShaderType.VERTEX, vert)
                 .defineIf("TAA", taa != null)
-                .defineIf("USE_SODIUM_EXTRA_CULLING", SodiumExtra.useSodiumExtraCulling())
                 .add(ShaderType.FRAGMENT, "voxy:chunkoutline/outline.fsh")
                 .compile()
                 .ubo(0, this.uniformBuffer)
@@ -95,29 +95,37 @@ public class ChunkBoundRenderer {
             }
         }
 
-        if (this.chunk2idx.isEmpty() && this.addQueue.isEmpty()) return;
+        if (!this.addQueue.isEmpty()) {
+            this.addQueue.forEach(this::_addPos);//TODO: REPLACE WITH SCATTER COMPUTE
+            this.addQueue.clear();
+            UploadStream.INSTANCE.commit();
+        }
+
+        if (this.chunk2idx.isEmpty()) return;
 
         viewport.depthBoundingBuffer.clear(0);
 
         long ptr = UploadStream.INSTANCE.upload(this.uniformBuffer, 0, 128);
         long matPtr = ptr; ptr += 4*4*4;
 
-        final float renderDistance = (Minecraft.getInstance().options.getEffectiveRenderDistance() - 2)*16;//In blocks
+        final float renderDistance = Minecraft.getInstance().options.getEffectiveRenderDistance()*16;//In blocks
 
         {//This is recomputed to be in chunk section space not worldsection
-            int sx = (int)(viewport.cameraX);
-            int sy = (int)(viewport.cameraY);
-            int sz = (int)(viewport.cameraZ);
-            new Vector3i(sx, sy, sz).getToAddress(ptr); ptr += 4*4;
 
-            var negInnerSec = new Vector3f(
-                    (float) (viewport.cameraX - sx),
-                    (float) (viewport.cameraY - sy),
-                    (float) (viewport.cameraZ - sz));
+            //Camera block pos
+            int bx = (int)(viewport.cameraX);
+            int by = (int)(viewport.cameraY);
+            int bz = (int)(viewport.cameraZ);
+            new Vector3i(bx, by, bz).getToAddress(ptr); ptr += 4*4;
+
+            var negInnerBlock = new Vector3f(
+                    (float) (viewport.cameraX - bx),
+                    (float) (viewport.cameraY - by),
+                    (float) (viewport.cameraZ - bz));
 
 
-            negInnerSec.getToAddress(ptr); ptr += 4*3;
-            viewport.MVP.translate(negInnerSec.negate(), new Matrix4f()).getToAddress(matPtr);
+            negInnerBlock.getToAddress(ptr); ptr += 4*3;
+            viewport.MVP.translate(negInnerBlock.negate(), new Matrix4f()).getToAddress(matPtr);
             MemoryUtil.memPutFloat(ptr, renderDistance); ptr += 4;
         }
         UploadStream.INSTANCE.commit();
@@ -138,11 +146,11 @@ public class ChunkBoundRenderer {
         viewport.depthBoundingBuffer.bind();
         this.rasterShader.bind();
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, SharedIndexBuffer.INSTANCE_BB_BYTE.id());
-        this.pipeline.bindUniforms();
+        if (this.pipeline != null) this.pipeline.bindUniforms();//shader TAA
 
         //Batch the draws into groups of size 32
         int count = this.chunk2idx.size();
-        if (count > 32) {
+        if (count >= 32) {
             glDrawElementsInstanced(GL_TRIANGLES, 6 * 2 * 3 * 32, GL_UNSIGNED_BYTE, 0, count/32);
         }
         if (count%32 != 0) {
@@ -159,12 +167,6 @@ public class ChunkBoundRenderer {
             glEnable(GL_DEPTH_TEST);
         }
 
-
-        if (!this.addQueue.isEmpty()) {
-            this.addQueue.forEach(this::_addPos);//TODO: REPLACE WITH SCATTER COMPUTE
-            this.addQueue.clear();
-            UploadStream.INSTANCE.commit();
-        }
     }
 
     private void _remPos(long pos) {

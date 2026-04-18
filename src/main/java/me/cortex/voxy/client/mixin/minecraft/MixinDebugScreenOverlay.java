@@ -33,7 +33,7 @@ public abstract class MixinDebugScreenOverlay {
         }
         VoxyRenderSystem vrs = null;
         var wr = Minecraft.getInstance().levelRenderer;
-        if (wr != null) vrs = ((IGetVoxyRenderSystem) wr).getVoxyRenderSystem();
+        if (wr != null) vrs = ((IGetVoxyRenderSystem) wr).voxy$getRenderSystem();
 
         //Voxy instance active
         voxyLines.add((vrs==null?ChatFormatting.DARK_GREEN:ChatFormatting.GREEN)+"voxy-"+VoxyCommon.MOD_VERSION);
