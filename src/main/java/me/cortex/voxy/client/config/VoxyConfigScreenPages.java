@@ -152,12 +152,21 @@ public abstract class VoxyConfigScreenPages {
                 ).build()
         );
 
+        OptionImpl<VoxyConfig, Boolean> adaptCloudDistanceOption = OptionImpl.createBuilder(boolean.class, storage)
+                .setName(Component.literal("Adapt cloud distance"))
+                .setTooltip(Component.literal("Extends the cloud distance according to the current render distance. It's automatically capped at 256"))
+                .setControl(TickBoxControl::new)
+                .setBinding((s, v) -> s.adaptCloudDistance = v, s -> s.adaptCloudDistance)
+                .setImpact(OptionImpact.LOW)
+                .build();
+
         groups.add(OptionGroup.createBuilder()
                 .add(OptionImpl.createBuilder(boolean.class, storage)
                         .setName(Component.translatable("voxy.config.general.render_fog"))
                         .setTooltip(Component.translatable("voxy.config.general.render_fog.tooltip"))
                         .setControl(TickBoxControl::new)
                         .setBinding((s, v) -> s.renderVanillaFog = v, s -> s.renderVanillaFog)
+                        .setImpact(OptionImpact.LOW)
                         .setFlags(OptionFlag.REQUIRES_RENDERER_RELOAD)
                         .build()
                 ).add(OptionImpl.createBuilder(int.class, storage)
@@ -165,7 +174,20 @@ public abstract class VoxyConfigScreenPages {
                     .setTooltip(Component.literal("Higher distance, sharper sky fog"))
                     .setControl(opt -> new SliderControl(opt, 16, 512, 16, v -> Component.literal(Integer.toString(v))))
                     .setBinding((s, v) -> s.skyFogDistance = v, s -> s.skyFogDistance)
+                    .setImpact(OptionImpact.LOW)
                     .build()
+                ).add(adaptCloudDistanceOption).add(OptionImpl.createBuilder(int.class, storage)
+                        .setName(Component.literal("Cloud distance"))
+                        .setTooltip(Component.literal("Cloud render distance in chunks"))
+                        .setEnabled(() -> !adaptCloudDistanceOption.getValue())
+                        .setControl(opt -> new SliderControl(opt, 0, 2048, 2, v -> {
+                            if (adaptCloudDistanceOption.getValue())
+                                return Component.literal("Adaptive");
+                            return Component.literal(v < 1 ? "Default" : Integer.toString(v));
+                        }))
+                        .setBinding((s, v) -> s.cloudDistance = v, s -> s.cloudDistance)
+                        .setImpact(OptionImpact.VARIES)
+                        .build()
                 ).add(OptionImpl.createBuilder(SSAO.SSAOMode.class, storage)
                         .setName(Component.translatable("voxy.config.general.ssao_mode"))
                         .setTooltip(Component.translatable("voxy.config.general.ssao_mode.tooltip"))
