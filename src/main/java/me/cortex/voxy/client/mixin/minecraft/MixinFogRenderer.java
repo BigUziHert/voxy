@@ -34,6 +34,18 @@ public class MixinFogRenderer {
 
         if (RenderSystem.getShaderFogEnd() < 10.0f) return;
 
+        // Capture original fog values BEFORE we modify them,
+        // so Voxy's own fog pass can use the correct values
+        float capturedFogEnd = RenderSystem.getShaderFogEnd();
+        if (VoxyConfig.CONFIG.linkFogToRenderDistance && fogMode == FogMode.FOG_TERRAIN) {
+            capturedFogEnd = VoxyConfig.CONFIG.sectionRenderDistance * 32 * 16;
+        }
+        vrs.setCapturedFog(
+            RenderSystem.getShaderFogStart(),
+            capturedFogEnd,
+            RenderSystem.getShaderFogColor()
+        );
+
         if (!VoxyConfig.CONFIG.renderVanillaFog) {
             RenderSystem.setShaderFogStart(999999999);
             RenderSystem.setShaderFogEnd(999999999);

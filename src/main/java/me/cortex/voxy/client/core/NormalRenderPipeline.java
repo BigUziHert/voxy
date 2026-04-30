@@ -2,6 +2,7 @@ package me.cortex.voxy.client.core;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.gl.GlFramebuffer;
 import me.cortex.voxy.client.core.gl.GlTexture;
 import me.cortex.voxy.client.core.gl.shader.Shader;
@@ -14,7 +15,6 @@ import me.cortex.voxy.client.core.rendering.post.FullscreenBlit;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import me.cortex.voxy.client.core.util.GPUTiming;
 import net.minecraft.client.Minecraft;
-import net.minecraft.util.Mth;
 import org.joml.Matrix4f;
 import org.lwjgl.system.MemoryStack;
 
@@ -103,27 +103,26 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         this.finalBlit.bind();
+        var vrs = IGetVoxyRenderSystem.getNullable();
+        float fogStart = vrs != null ? vrs.getCapturedFogStart() : RenderSystem.getShaderFogStart();
+        float fogEnd   = vrs != null ? vrs.getCapturedFogEnd()   : RenderSystem.getShaderFogEnd();
+        float[] fogColor = vrs != null ? vrs.getCapturedFogColor() : RenderSystem.getShaderFogColor();
 
-        float fogStart = RenderSystem.getShaderFogStart();
-        float fogEnd = RenderSystem.getShaderFogEnd();
-        float[] fogColor = RenderSystem.getShaderFogColor();
-
-        float renderDistance = Minecraft.getInstance().gameRenderer.getRenderDistance();
-
-        boolean fogCoversAllRendering = fogEnd < renderDistance;
+        boolean fogCoversAllRendering = fogEnd < VoxyRenderSystem.getRenderDistance();
 
         if (this.useEnvFog) {
             if (Math.abs(fogEnd - fogStart) > 1) {
-                float invEndFogDelta = 1f / (fogEnd - fogStart);
-                float endDistance = Math.max(renderDistance, 20 * 16); //TODO: make this constant a config option
-                endDistance *= (float) Math.sqrt(3);
-                float startDelta = -fogStart * invEndFogDelta;
-                float clampedDist = Mth.clamp(endDistance * invEndFogDelta + startDelta, 0.0f, 1.0f);
-                glUniform4f(4, invEndFogDelta, startDelta, clampedDist, 0);
+                glUniform2f(4, fogStart, fogEnd);
                 glUniform4f(5, fogColor[0], fogColor[1], fogColor[2], 1.0f);
+                glUniform1i(6, RenderSystem.getShaderFogShape().getIndex());
+                glUniform1f(7, VoxyConfig.CONFIG.fogIntensity);
+                glUniform1f(8, VoxyConfig.CONFIG.fogDensity);
             } else {
-                glUniform4f(4, 0, 0, 0, 0);
+                glUniform2f(4, 0, 0);
                 glUniform4f(5, 0, 0, 0, 0);
+                glUniform1i(6, 0);
+                glUniform1f(7, 0);
+                glUniform1f(8, 0);
             }
         }
 
