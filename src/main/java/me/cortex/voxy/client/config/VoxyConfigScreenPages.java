@@ -136,7 +136,7 @@ public abstract class VoxyConfigScreenPages {
                         .setControl(opt -> new SliderControl(opt, 10, 64 * 16, 1, v -> Component.literal(Integer.toString(v * 2))))
                         .setBinding((s, v) -> {
                             // Value stored as float fraction
-                            s.sectionRenderDistance = (int) (((float)v) / 16.0f);
+                            s.sectionRenderDistance = (((float)v) / 16.0f);
 
                             var vrsh = (IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer;
                             if (vrsh != null) {
@@ -190,7 +190,7 @@ public abstract class VoxyConfigScreenPages {
                 ).add(adaptCloudDistanceOption).add(OptionImpl.createBuilder(int.class, storage)
                         .setName(Component.literal("Cloud distance"))
                         .setTooltip(Component.literal("Cloud render distance in chunks"))
-                        .setEnabled(() -> !adaptCloudDistanceOption.getValue())
+                        .setEnabled(!adaptCloudDistanceOption.getValue())
                         .setControl(opt -> new SliderControl(opt, 0, 2048, 2, v -> {
                             if (adaptCloudDistanceOption.getValue())
                                 return Component.literal("Adaptive");
