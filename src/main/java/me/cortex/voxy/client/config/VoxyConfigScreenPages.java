@@ -25,6 +25,7 @@ public abstract class VoxyConfigScreenPages {
             Component.translatable("voxy.config.general.ssao_mode.better"),
             Component.translatable("voxy.config.general.ssao_mode.best")
     };
+    private static int MAX_RENDER_DISTANCE = 64 * 16;
 
     private VoxyConfigScreenPages(){}
 
@@ -132,8 +133,8 @@ public abstract class VoxyConfigScreenPages {
                 ).add(OptionImpl.createBuilder(int.class, storage)
                         .setName(Component.translatable("voxy.config.general.renderDistance"))
                         .setTooltip(Component.translatable("voxy.config.general.renderDistance.tooltip"))
-                        // Range: 10 to 64*16 (1024). Display: v*2
-                        .setControl(opt -> new SliderControl(opt, 10, 64 * 16, 1, v -> Component.literal(Integer.toString(v * 2))))
+                        // Range: 10 to MAX_RENDER_DISTANCE. Display: v*2
+                        .setControl(opt -> new SliderControl(opt, 10, MAX_RENDER_DISTANCE, 1, v -> Component.literal(Integer.toString(v * 2))))
                         .setBinding((s, v) -> {
                             // Value stored as float fraction
                             s.sectionRenderDistance = (((float)v) / 16.0f);
@@ -145,7 +146,7 @@ public abstract class VoxyConfigScreenPages {
                                     vrs.setRenderDistance(s.sectionRenderDistance);
                                 }
                             }
-                        }, s -> Math.round(s.sectionRenderDistance * 16))
+                        }, s -> Math.min(MAX_RENDER_DISTANCE, Math.round(s.sectionRenderDistance * 16)))
                         .setImpact(OptionImpact.LOW)
                         .setFlags(OptionFlag.REQUIRES_RENDERER_RELOAD)
                         .build()
