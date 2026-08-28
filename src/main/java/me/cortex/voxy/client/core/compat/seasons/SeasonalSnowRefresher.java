@@ -39,9 +39,6 @@ public final class SeasonalSnowRefresher {
     //Block ids live in bits 27..46 of a voxel, see Mapper#getBlockId
     private static final long BLOCK_ID_MASK = ((1L << 20) - 1) << 27;
 
-    //Sky light the voxel above must exceed before snow can settle, matching the ingest side
-    static final int MIN_SKY_LIGHT = 9;
-
     //Verdicts. UNKNOWN is not "no", it means leave the voxel exactly as it is: a biome the store
     //remembers but this world cannot resolve is not evidence of no snow, and stripping it would
     //persist and could only be undone by a re-ingest.
@@ -53,7 +50,7 @@ public final class SeasonalSnowRefresher {
     //made in terms of them so that what the command reports is the decision itself rather than a
     //second copy of it that can drift.
     public static final int R_YES = 0;
-    public static final int R_NO_SKY_LIGHT = 1;
+    public static final int R_NO_COVERED = 1;
     public static final int R_NO_BLOCK_LIGHT = 2;
     public static final int R_NO_NOT_A_SNOW_BLOCK = 3;
     public static final int R_NO_TREE_INTERIOR = 4;
@@ -73,7 +70,7 @@ public final class SeasonalSnowRefresher {
 
     public static final String[] REASON_NAMES = {
             "snow",
-            "no: too dark to be open sky",
+            "no: something above it blocks the sky",
             "no: too close to a glowing block",
             "no: not a block EclipticSeasons snows",
             "no: inside a tree, and snowy trees are off",
@@ -94,16 +91,29 @@ public final class SeasonalSnowRefresher {
     }
 
     /**
-     * The cheapest part of the snow decision, and the one that rejects almost everything: anything
-     * not open to the sky. Split out so the caller can run it before resolving a block state, a
-     * biome and a position, which is otherwise a billion pointless allocations underground.
+     * Whether a voxel is open to the sky, which is the test that rejects almost everything and so
+     * runs before a block state, a biome or a position is resolved.
+     *
+     * Decided from geometry, not from the stored sky light, and that distinction is the whole point.
+     * Sky light on an air voxel reads zero both for somewhere genuinely buried and for somewhere the
+     * store simply has no data, and empty sky above the surface is exactly the second: voxy has no
+     * reason to keep a section that is nothing but air, so the mip above the ground reads as pitch
+     * dark. Believing it stripped snow off the terrain furthest away, where the voxel above spans
+     * sixteen blocks and lands in that empty sky. Nothing solid above it in the column we can see is
+     * the same question asked of data that is actually there.
      */
-    static boolean lightAllowsSnow(long aboveVoxel, boolean notSnowyNearGlow, int glowLevel) {
-        int light = Mapper.getLightId(aboveVoxel);
-        if ((light & 0xF) <= MIN_SKY_LIGHT) {
-            return false;
+    static boolean glowAllowsSnow(long aboveVoxel, boolean notSnowyNearGlow, int glowLevel) {
+        return !(notSnowyNearGlow && ((Mapper.getLightId(aboveVoxel) >> 4) & 0xF) >= glowLevel);
+    }
+
+    /** True when every voxel above this one, in the column and section given, is air. */
+    private static boolean nothingSolidAbove(long[] data, int x, int fromY, int z) {
+        for (int y = 31; y > fromY; y--) {
+            if (!Mapper.isAir(data[WorldSection.getIndex(x, y, z)])) {
+                return false;
+            }
         }
-        return !(notSnowyNearGlow && ((light >> 4) & 0xF) >= glowLevel);
+        return true;
     }
 
     static long withBlockId(long voxel, int blockId) {
@@ -328,65 +338,73 @@ public final class SeasonalSnowRefresher {
         int lvl = section.lvl;
         int changed = 0;
 
-        for (int y = 0; y < 32; y++) {
-            for (int z = 0; z < 32; z++) {
-                for (int x = 0; x < 32; x++) {
+        //Column at a time, from the top down, so openness to the sky falls out of the walk itself
+        for (int z = 0; z < 32; z++) {
+            for (int x = 0; x < 32; x++) {
+                //A missing section above is empty sky, not an unknown: voxy has no reason to store
+                //one that is nothing but air, so its absence is what open sky looks like here
+                boolean covered = aboveData != null && !nothingSolidAbove(aboveData, x, -1, z);
+                long aboveVoxel = aboveData == null ? 0 : aboveData[WorldSection.getIndex(x, 0, z)];
+
+                for (int y = 31; y >= 0; y--) {
                     int idx = WorldSection.getIndex(x, y, z);
                     long voxel = data[idx];
 
                     int stored = Mapper.getBlockId(voxel);
                     int base = stored >= stateCount ? SeasonalSnowIds.MAX_BLOCK_ID - stored : stored;
-                    if (base <= 0 || base >= stateCount) {
-                        continue;//Air, or an id this world cannot resolve
+                    if (base > 0 && base < stateCount) {
+                        changed += decideVoxel(level, mapper, section, data, idx, voxel, stored, base,
+                                aboveVoxel, !covered, x, y, z, lvl, stateCount, biomeCache, biomeTried,
+                                notSnowyNearGlow, glowLevel, snowyTree);
                     }
 
-                    long aboveVoxel;
-                    if (y < 31) {
-                        aboveVoxel = data[WorldSection.getIndex(x, y + 1, z)];
-                    } else if (aboveData != null) {
-                        aboveVoxel = aboveData[WorldSection.getIndex(x, 0, z)];
-                    } else {
-                        continue;//Nothing above to judge by, leave it alone
+                    if (!Mapper.isAir(voxel)) {
+                        covered = true;//For everything below it, not for itself
                     }
-
-                    if (!lightAllowsSnow(aboveVoxel, notSnowyNearGlow, glowLevel)) {
-                        //A definite no, not an unknown, so snow that is there has to come off
-                        if (stored != base) {
-                            data[idx] = withBlockId(voxel, base);
-                            changed++;
-                        }
-                        continue;
-                    }
-
-                    BlockState state = mapper.getBlockStateFromBlockId(base);
-                    if (state == null) {
-                        continue;
-                    }
-
-                    Holder<Biome> biome = biome(level, mapper, Mapper.getBiomeId(voxel), biomeCache, biomeTried);
-                    BlockPos pos = new BlockPos(
-                            ((section.x << 5) + x) << lvl,
-                            ((section.y << 5) + y) << lvl,
-                            ((section.z << 5) + z) << lvl);
-
-                    int verdict = SeasonalSnowHooks.decide(level, mapper, state, aboveVoxel, biome, pos,
-                            stateCount, notSnowyNearGlow, glowLevel, snowyTree);
-                    if (verdict == UNKNOWN) {
-                        continue;
-                    }
-
-                    boolean want = verdict == YES;
-                    boolean has = stored != base;
-                    if (want == has) {
-                        continue;
-                    }
-
-                    data[idx] = withBlockId(voxel, want ? SeasonalSnowIds.mark(base) : base);
-                    changed++;
+                    aboveVoxel = voxel;
                 }
             }
         }
         return changed;
+    }
+
+    /** Returns 1 when the voxel was rewritten, 0 otherwise. */
+    private static int decideVoxel(Level level, Mapper mapper, WorldSection section, long[] data,
+                                   int idx, long voxel, int stored, int base, long aboveVoxel,
+                                   boolean openToSky, int x, int y, int z, int lvl, int stateCount,
+                                   Holder<Biome>[] biomeCache, boolean[] biomeTried,
+                                   boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
+        boolean has = stored != base;
+        if (!openToSky || !glowAllowsSnow(aboveVoxel, notSnowyNearGlow, glowLevel)) {
+            //A definite no, not an unknown, so snow that is there has to come off
+            if (has) {
+                data[idx] = withBlockId(voxel, base);
+                return 1;
+            }
+            return 0;
+        }
+
+        BlockState state = mapper.getBlockStateFromBlockId(base);
+        if (state == null) {
+            return 0;
+        }
+        Holder<Biome> biome = biome(level, mapper, Mapper.getBiomeId(voxel), biomeCache, biomeTried);
+        BlockPos pos = new BlockPos(
+                ((section.x << 5) + x) << lvl,
+                ((section.y << 5) + y) << lvl,
+                ((section.z << 5) + z) << lvl);
+
+        int verdict = SeasonalSnowHooks.decide(level, mapper, state, aboveVoxel, true, biome, pos,
+                stateCount, notSnowyNearGlow, glowLevel, snowyTree);
+        if (verdict == UNKNOWN) {
+            return 0;
+        }
+        boolean want = verdict == YES;
+        if (want == has) {
+            return 0;
+        }
+        data[idx] = withBlockId(voxel, want ? SeasonalSnowIds.mark(base) : base);
+        return 1;
     }
 
     /**
@@ -437,19 +455,11 @@ public final class SeasonalSnowRefresher {
                 int base = stored >= stateCount ? SeasonalSnowIds.MAX_BLOCK_ID - stored : stored;
                 boolean marked = stored != base;
 
-                long aboveVoxel;
-                if (vy < 31) {
-                    aboveVoxel = data[WorldSection.getIndex(vx, vy + 1, vz)];
-                } else {
-                    above = engine.acquireIfExists(WorldEngine.getWorldSectionId(lvl, sx, sy + 1, sz));
-                    long[] aboveData = above == null ? null : above._unsafeGetRawDataArray();
-                    if (aboveData == null) {
-                        out.add(at + describeBlock(mapper, base, stateCount, marked)
-                                + ", nothing stored above it so it is never touched");
-                        continue;
-                    }
-                    aboveVoxel = aboveData[WorldSection.getIndex(vx, 0, vz)];
-                }
+                above = engine.acquireIfExists(WorldEngine.getWorldSectionId(lvl, sx, sy + 1, sz));
+                long[] aboveData = above == null ? null : above._unsafeGetRawDataArray();
+                long aboveVoxel = vy < 31
+                        ? data[WorldSection.getIndex(vx, vy + 1, vz)]
+                        : (aboveData == null ? 0 : aboveData[WorldSection.getIndex(vx, 0, vz)]);
 
                 int lightAbove = Mapper.getLightId(aboveVoxel);
                 int biomeId = Mapper.getBiomeId(voxel);
@@ -470,8 +480,10 @@ public final class SeasonalSnowRefresher {
                 Holder<Biome> biome = biome(level, mapper, biomeId, cache, tried);
                 BlockPos pos = new BlockPos(
                         ((sx << 5) + vx) << lvl, ((sy << 5) + vy) << lvl, ((sz << 5) + vz) << lvl);
-                int reason = SeasonalSnowHooks.explain(level, mapper, state, aboveVoxel, biome, pos,
-                        stateCount, notSnowyNearGlow, glowLevel, snowyTree);
+                boolean openToSky = nothingSolidAbove(data, vx, vy, vz)
+                        && (aboveData == null || nothingSolidAbove(aboveData, vx, -1, vz));
+                int reason = SeasonalSnowHooks.explain(level, mapper, state, aboveVoxel, openToSky,
+                        biome, pos, stateCount, notSnowyNearGlow, glowLevel, snowyTree);
                 if (reason == R_NO_BIOME_HAS_NO_SNOW) {
                     reason = SeasonalSnowHooks.snowDepthValue(level, biome.value()) <= 0
                             ? R_NO_BIOME_DRY : R_NO_LOST_THE_ROLL;
@@ -584,49 +596,31 @@ public final class SeasonalSnowRefresher {
                                 continue;
                             }
                             sections++;
-                            for (int y = 0; y < 32; y++) {
-                                for (int z = 0; z < 32; z++) {
-                                    for (int x = 0; x < 32; x++) {
+                            for (int z = 0; z < 32; z++) {
+                                for (int x = 0; x < 32; x++) {
+                                    boolean covered = aboveData != null
+                                            && !nothingSolidAbove(aboveData, x, -1, z);
+                                    long aboveVoxel = aboveData == null
+                                            ? 0 : aboveData[WorldSection.getIndex(x, 0, z)];
+                                    for (int y = 31; y >= 0; y--) {
                                         long voxel = data[WorldSection.getIndex(x, y, z)];
                                         int stored = Mapper.getBlockId(voxel);
                                         int base = stored >= stateCount
                                                 ? SeasonalSnowIds.MAX_BLOCK_ID - stored : stored;
-                                        if (base <= 0 || base >= stateCount) {
-                                            continue;
+                                        boolean readable = base > 0 && base < stateCount;
+                                        if (readable) {
+                                            if (stored != base) {
+                                                snowNow++;
+                                            }
+                                            reasons[reasonFor(level, mapper, voxel, base, aboveVoxel,
+                                                    !covered, sx, sy, sz, x, y, z, lvl, stateCount,
+                                                    cache, tried, depthCache, notSnowyNearGlow,
+                                                    glowLevel, snowyTree)]++;
                                         }
-                                        if (stored != base) {
-                                            snowNow++;
+                                        if (!Mapper.isAir(voxel)) {
+                                            covered = true;
                                         }
-                                        long aboveVoxel;
-                                        if (y < 31) {
-                                            aboveVoxel = data[WorldSection.getIndex(x, y + 1, z)];
-                                        } else if (aboveData != null) {
-                                            aboveVoxel = aboveData[WorldSection.getIndex(x, 0, z)];
-                                        } else {
-                                            continue;
-                                        }
-                                        if (!lightAllowsSnow(aboveVoxel, notSnowyNearGlow, glowLevel)) {
-                                            //Counted without resolving anything, same as the walk does
-                                            reasons[(Mapper.getLightId(aboveVoxel) & 0xF) <= MIN_SKY_LIGHT
-                                                    ? R_NO_SKY_LIGHT : R_NO_BLOCK_LIGHT]++;
-                                            continue;
-                                        }
-                                        BlockState state = mapper.getBlockStateFromBlockId(base);
-                                        if (state == null) {
-                                            continue;
-                                        }
-                                        Holder<Biome> biome = biome(level, mapper,
-                                                Mapper.getBiomeId(voxel), cache, tried);
-                                        BlockPos pos = new BlockPos(((sx << 5) + x) << lvl,
-                                                ((sy << 5) + y) << lvl, ((sz << 5) + z) << lvl);
-                                        int reason = SeasonalSnowHooks.explain(level, mapper, state,
-                                                aboveVoxel, biome, pos, stateCount, notSnowyNearGlow,
-                                                glowLevel, snowyTree);
-                                        if (reason == R_NO_BIOME_HAS_NO_SNOW) {
-                                            reason = depthOf(level, biome, Mapper.getBiomeId(voxel),
-                                                    depthCache) <= 0 ? R_NO_BIOME_DRY : R_NO_LOST_THE_ROLL;
-                                        }
-                                        reasons[reason]++;
+                                        aboveVoxel = voxel;
                                     }
                                 }
                             }
@@ -643,17 +637,40 @@ public final class SeasonalSnowRefresher {
                 out.add("lod " + lvl + ": nothing stored nearby");
                 continue;
             }
-            //Sky light rejects the whole underground, so reporting it would drown out everything else
+            //Being buried rejects the whole underground, so it would drown out everything else
             StringBuilder sb = new StringBuilder("lod " + lvl + ": " + sections + " sections, "
                     + snowNow + " snowy now");
             for (int r = 0; r < REASON_COUNT; r++) {
-                if (r == R_NO_SKY_LIGHT || reasons[r] == 0) {
+                if (r == R_NO_COVERED || reasons[r] == 0) {
                     continue;
                 }
                 sb.append(", ").append(reasons[r]).append(' ').append(REASON_NAMES[r]);
             }
             out.add(sb.toString());
         }
+    }
+
+    private static int reasonFor(Level level, Mapper mapper, long voxel, int base, long aboveVoxel,
+                                 boolean openToSky, int sx, int sy, int sz, int x, int y, int z,
+                                 int lvl, int stateCount, Holder<Biome>[] cache, boolean[] tried,
+                                 int[] depthCache, boolean notSnowyNearGlow, int glowLevel,
+                                 boolean snowyTree) {
+        if (!openToSky) {
+            return R_NO_COVERED;
+        }
+        BlockState state = mapper.getBlockStateFromBlockId(base);
+        if (state == null) {
+            return R_UNKNOWN_ABOVE_UNRESOLVABLE;
+        }
+        int biomeId = Mapper.getBiomeId(voxel);
+        Holder<Biome> biome = biome(level, mapper, biomeId, cache, tried);
+        BlockPos pos = new BlockPos(((sx << 5) + x) << lvl, ((sy << 5) + y) << lvl, ((sz << 5) + z) << lvl);
+        int reason = SeasonalSnowHooks.explain(level, mapper, state, aboveVoxel, true, biome, pos,
+                stateCount, notSnowyNearGlow, glowLevel, snowyTree);
+        if (reason == R_NO_BIOME_HAS_NO_SNOW) {
+            return depthOf(level, biome, biomeId, depthCache) <= 0 ? R_NO_BIOME_DRY : R_NO_LOST_THE_ROLL;
+        }
+        return reason;
     }
 
     private static int depthOf(Level level, Holder<Biome> biome, int biomeId, int[] cache) {

@@ -95,53 +95,70 @@ final class SeasonalSnowHooks {
             BIOME_TRIED.set(tried);
         }
 
-        //Index layout is (y<<8)|(z<<4)|x, so the voxel above is +256 and the top row has none
-        for (int i = 0; i < 0xF00; i++) {
-            long voxel = data[i];
-            int blockId = Mapper.getBlockId(voxel);
-            if (blockId <= 0 || blockId >= stateCount) {
-                continue;//Air, or already marked, or not resolvable
-            }
-            //Reject on light before resolving anything: this runs during chunk load, and almost
-            //every voxel in a section is underground
-            if (!SeasonalSnowRefresher.lightAllowsSnow(data[i + 256], cfgGlow, cfgGlowLvl)) {
-                continue;
-            }
-
-            BlockState state = mapper.getBlockStateFromBlockId(blockId);
-            if (state == null) {
-                continue;
-            }
-
-            int biomeId = Mapper.getBiomeId(voxel);
-            Holder<Biome> biome = null;
-            if (biomeId >= 0 && biomeId < cache.length) {
-                if (!tried[biomeId]) {
-                    tried[biomeId] = true;
-                    try {
-                        cache[biomeId] = level.registryAccess()
-                                .registryOrThrow(Registries.BIOME)
-                                .getHolder(ResourceKey.create(Registries.BIOME,
-                                        ResourceLocation.parse(mapper.getBiomeEntries()[biomeId].biome)))
-                                .orElse(null);
-                    } catch (Throwable ignored) {
-                        cache[biomeId] = null;
+        //Index layout is (y<<8)|(z<<4)|x, so the voxel above is +256 and the top row has none.
+        //Walked a column at a time from the top so that openness to the sky comes out of the walk,
+        //exactly as the refresher decides it. The two have to agree: a re-ingest that disagreed with
+        //a refresh is what used to strip snow off ground you flew over.
+        for (int column = 0; column < 256; column++) {
+            boolean covered = false;
+            for (int y = 15; y >= 0; y--) {
+                int i = (y << 8) | column;
+                long voxel = data[i];
+                int blockId = Mapper.getBlockId(voxel);
+                boolean solid = !Mapper.isAir(voxel);
+                if (covered || y == 15 || blockId <= 0 || blockId >= stateCount) {
+                    //Covered, the top row with nothing above it to judge by, air, or unresolvable
+                    if (solid) {
+                        covered = true;
                     }
+                    continue;
                 }
-                biome = cache[biomeId];
+                if (!SeasonalSnowRefresher.glowAllowsSnow(data[i + 256], cfgGlow, cfgGlowLvl)) {
+                    covered = true;//solid, or it would not have an id
+                    continue;
+                }
+                markVoxel(level, data, i, voxel, blockId, mapper, section, cache, tried, stateCount);
+                covered = true;//A block with an id is solid, so nothing under it is open
             }
+        }
+    }
 
-            BlockPos pos = new BlockPos(
-                    (section.x << 4) + (i & 0xF),
-                    (section.y << 4) + ((i >> 8) & 0xF),
-                    (section.z << 4) + ((i >> 4) & 0xF));
+    private static void markVoxel(Level level, long[] data, int i, long voxel, int blockId, Mapper mapper,
+                              VoxelizedSection section, Holder<Biome>[] cache, boolean[] tried,
+                              int stateCount) {
+        BlockState state = mapper.getBlockStateFromBlockId(blockId);
+        if (state == null) {
+            return;
+        }
 
-            int verdict = decide(level, mapper, state, data[i + 256], biome, pos, stateCount,
-                    cfgGlow, cfgGlowLvl, cfgTree);
-            if (verdict == SeasonalSnowRefresher.YES) {
-                data[i] = SeasonalSnowRefresher.withBlockId(voxel,
-                        me.cortex.voxy.common.compat.SeasonalSnowIds.mark(blockId));
+        int biomeId = Mapper.getBiomeId(voxel);
+        Holder<Biome> biome = null;
+        if (biomeId >= 0 && biomeId < cache.length) {
+            if (!tried[biomeId]) {
+                tried[biomeId] = true;
+                try {
+                    cache[biomeId] = level.registryAccess()
+                            .registryOrThrow(Registries.BIOME)
+                            .getHolder(ResourceKey.create(Registries.BIOME,
+                                    ResourceLocation.parse(mapper.getBiomeEntries()[biomeId].biome)))
+                            .orElse(null);
+                } catch (Throwable ignored) {
+                    cache[biomeId] = null;
+                }
             }
+            biome = cache[biomeId];
+        }
+
+        BlockPos pos = new BlockPos(
+                (section.x << 4) + (i & 0xF),
+                (section.y << 4) + ((i >> 8) & 0xF),
+                (section.z << 4) + ((i >> 4) & 0xF));
+
+        int verdict = decide(level, mapper, state, data[i + 256], true, biome, pos, stateCount,
+                cfgGlow, cfgGlowLvl, cfgTree);
+        if (verdict == SeasonalSnowRefresher.YES) {
+            data[i] = SeasonalSnowRefresher.withBlockId(voxel,
+                    me.cortex.voxy.common.compat.SeasonalSnowIds.mark(blockId));
         }
     }
 
@@ -187,22 +204,21 @@ final class SeasonalSnowHooks {
      *
      * Returns SeasonalSnowRefresher NO / YES / UNKNOWN. UNKNOWN means leave the voxel alone.
      */
-    static int decide(Level level, Mapper mapper, BlockState state, long aboveVoxel,
+    static int decide(Level level, Mapper mapper, BlockState state, long aboveVoxel, boolean openToSky,
                       Holder<Biome> biome, BlockPos pos, int stateCount,
                       boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
-        return SeasonalSnowRefresher.verdictOf(explain(level, mapper, state, aboveVoxel, biome, pos,
-                stateCount, notSnowyNearGlow, glowLevel, snowyTree));
+        return SeasonalSnowRefresher.verdictOf(explain(level, mapper, state, aboveVoxel, openToSky,
+                biome, pos, stateCount, notSnowyNearGlow, glowLevel, snowyTree));
     }
 
     /** The decision itself, as a SeasonalSnowRefresher R_ reason. See decide for the verdict. */
-    static int explain(Level level, Mapper mapper, BlockState state, long aboveVoxel,
+    static int explain(Level level, Mapper mapper, BlockState state, long aboveVoxel, boolean openToSky,
                        Holder<Biome> biome, BlockPos pos, int stateCount,
                        boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
-        int light = Mapper.getLightId(aboveVoxel);
-        if ((light & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
-            return SeasonalSnowRefresher.R_NO_SKY_LIGHT;//Not open enough to the sky
+        if (!openToSky) {
+            return SeasonalSnowRefresher.R_NO_COVERED;
         }
-        if (notSnowyNearGlow && ((light >> 4) & 0xF) >= glowLevel) {
+        if (!SeasonalSnowRefresher.glowAllowsSnow(aboveVoxel, notSnowyNearGlow, glowLevel)) {
             return SeasonalSnowRefresher.R_NO_BLOCK_LIGHT;
         }
 
@@ -350,7 +366,8 @@ final class SeasonalSnowHooks {
         out.add("config: snowyTree=" + cfgSnowyTree()
                 + ", notSnowyNearGlowingBlock=" + cfgNotSnowyNearGlow()
                 + " at light " + cfgGlowLevel()
-                + ", min sky light " + (SeasonalSnowRefresher.MIN_SKY_LIGHT + 1));
+                + ". Openness to the sky is read from what is stored above a voxel, not from its"
+                + " sky light, which is unreliable over empty sky");
 
         var entries = mapper.getBiomeEntries();
         int known = 0;
