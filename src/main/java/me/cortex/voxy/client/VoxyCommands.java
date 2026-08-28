@@ -80,6 +80,15 @@ public class VoxyCommands {
                         .executes(VoxyCommands::reloadSeasonalColours))
                 .then(ClientCommandManager.literal("debug")
                         .executes(VoxyCommands::seasonalSnowDebug))
+                .then(ClientCommandManager.literal("watch")
+                        .executes(ctx -> seasonalSnowWatch(ctx, null))
+                        .then(ClientCommandManager.argument("x", IntegerArgumentType.integer())
+                                .then(ClientCommandManager.argument("y", IntegerArgumentType.integer())
+                                        .then(ClientCommandManager.argument("z", IntegerArgumentType.integer())
+                                                .executes(ctx -> seasonalSnowWatch(ctx, new net.minecraft.core.BlockPos(
+                                                        IntegerArgumentType.getInteger(ctx, "x"),
+                                                        IntegerArgumentType.getInteger(ctx, "y"),
+                                                        IntegerArgumentType.getInteger(ctx, "z"))))))))
                 .then(ClientCommandManager.literal("probe")
                         .executes(ctx -> seasonalSnowProbe(ctx, null))
                         .then(ClientCommandManager.argument("x", IntegerArgumentType.integer())
@@ -96,6 +105,17 @@ public class VoxyCommands {
                 .then(imports)
                 .then(seasonalSnow)
                 .then(debug);
+    }
+
+    private static int seasonalSnowWatch(CommandContext<FabricClientCommandSource> ctx,
+                                        net.minecraft.core.BlockPos at) {
+        me.cortex.voxy.client.core.compat.seasons.SeasonalSnowRefresher.watch(at);
+        ctx.getSource().sendFeedback(Component.literal(at == null
+                ? "No longer narrating any block"
+                : "Narrating every seasonal snow decision about " + at.getX() + " " + at.getY()
+                        + " " + at.getZ() + " to the log. Run a refresh, then send the lines "
+                        + "tagged [snow watch]"));
+        return 0;
     }
 
     private static int refreshSeasonalSnow(CommandContext<FabricClientCommandSource> ctx) {

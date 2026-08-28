@@ -217,6 +217,43 @@ public final class SeasonalSnowRefresher {
         }
     }
 
+    /**
+     * One block position the pass narrates every decision about, to the log.
+     *
+     * Reasoning from the outside has not been enough here: the probe evaluates a voxel and says
+     * snow, the stored voxel is bare, and both readings are of the same data through the same
+     * function. Something between the decision and the store is disagreeing, and the only way to see
+     * which is to have the walk say what it did, at the moment it did it.
+     */
+    private static volatile long watchPos = Long.MIN_VALUE;
+
+    public static void watch(BlockPos pos) {
+        watchPos = pos == null ? Long.MIN_VALUE : pos.asLong();
+    }
+
+    public static boolean watching() {
+        return watchPos != Long.MIN_VALUE;
+    }
+
+    /** The index inside this section of the watched block, or -1 when it is not in it. */
+    private static int watchIndexIn(WorldSection section) {
+        long wp = watchPos;
+        if (wp == Long.MIN_VALUE) {
+            return -1;
+        }
+        int wx = BlockPos.getX(wp);
+        int wy = BlockPos.getY(wp);
+        int wz = BlockPos.getZ(wp);
+        if ((wx >> 5) != section.x || (wy >> 5) != section.y || (wz >> 5) != section.z) {
+            return -1;
+        }
+        return WorldSection.getIndex(wx & 31, wy & 31, wz & 31);
+    }
+
+    private static void watchLog(String what) {
+        Logger.info("[snow watch] " + what);
+    }
+
     public static int barrenCount() {
         synchronized (BARREN_LOCK) {
             return barren.size();
@@ -414,6 +451,16 @@ public final class SeasonalSnowRefresher {
 
             final int total = keys.size();
             status = "scanning " + total + " sections";
+            if (watching()) {
+                long wk = WorldEngine.getWorldSectionId(0, BlockPos.getX(watchPos) >> 5,
+                        BlockPos.getY(watchPos) >> 5, BlockPos.getZ(watchPos) >> 5);
+                boolean listed = false;
+                for (int i = 0; i < total && !listed; i++) {
+                    listed = keys.getLong(i) == wk;
+                }
+                watchLog("pass over " + total + " sections; " + WorldEngine.pprintPos(wk)
+                        + (listed ? " is in the list" : " IS NOT IN THE LIST, the store never offered it"));
+            }
 
             //Workers pull indices off a shared cursor, so the nearest first order is still roughly
             //what gets done first while the pass uses more than one core. Safe where it matters: the
@@ -430,6 +477,11 @@ public final class SeasonalSnowRefresher {
                     new java.util.concurrent.atomic.AtomicLong();
             final java.util.concurrent.atomic.AtomicLong skippedA =
                     new java.util.concurrent.atomic.AtomicLong();
+            //The section the watched block lives in, so the walk can say whether it ever saw it
+            final long watchKey = watching()
+                    ? WorldEngine.getWorldSectionId(0, BlockPos.getX(watchPos) >> 5,
+                            BlockPos.getY(watchPos) >> 5, BlockPos.getZ(watchPos) >> 5)
+                    : Long.MIN_VALUE;
             final boolean fNotSnowyNearGlow = notSnowyNearGlow;
             final int fGlowLevel = glowLevel;
             final boolean fSnowyTree = snowyTree;
@@ -448,7 +500,14 @@ public final class SeasonalSnowRefresher {
                         long key = keys.getLong(i);
                         if (isBarren(key)) {
                             skippedA.incrementAndGet();
+                            if (watchKey != Long.MIN_VALUE && key == watchKey) {
+                                watchLog("the walk skipped " + WorldEngine.pprintPos(key)
+                                        + " as unsnowable");
+                            }
                             continue;//Never reads it, which is the whole point
+                        }
+                        if (watchKey != Long.MIN_VALUE && key == watchKey) {
+                            watchLog("the walk reached " + WorldEngine.pprintPos(key));
                         }
                         WorldSection section = engine.acquireIfExists(key);
                         if (section != null) {
@@ -456,6 +515,10 @@ public final class SeasonalSnowRefresher {
                                 long result = refreshSection(engine, level, mapper, biomes, section,
                                         fNotSnowyNearGlow, fGlowLevel, fSnowyTree);
                                 int changed = (int) result;
+                                if (watchKey != Long.MIN_VALUE && key == watchKey && changed == 0) {
+                                    watchLog("nothing changed at level 0 here, so the parents are "
+                                            + "left exactly as they were");
+                                }
                                 if ((result & CANDIDATE_BIT) == 0) {
                                     //Nothing in it any season could snow, so no later pass needs it
                                     setBarren(key);
@@ -578,20 +641,29 @@ public final class SeasonalSnowRefresher {
         long[] aboveData = null;
         int changed = 0;
         boolean candidate = false;
+        final int watchIdx = watchIndexIn(section);
 
         try {
             for (int y = 0; y < SECTION_WIDTH; y++) {
                 for (int z = 0; z < SECTION_WIDTH; z++) {
                     for (int x = 0; x < SECTION_WIDTH; x++) {
                         int idx = WorldSection.getIndex(x, y, z);
+                        final boolean watched = idx == watchIdx;
                         long voxel = data[idx];
                         int stored = Mapper.getBlockId(voxel);
                         if (stored == 0) {
+                            if (watched) {
+                                watchLog("level 0 voxel is air, nothing to decide");
+                            }
                             continue;//Air
                         }
                         boolean storedSnowy = stored >= stateCount;
                         int base = storedSnowy ? SeasonalSnowIds.MAX_BLOCK_ID - stored : stored;
                         if (base <= 0 || base >= stateCount) {
+                            if (watched) {
+                                watchLog("level 0 voxel holds id " + stored
+                                        + " which this world cannot resolve");
+                            }
                             continue;//An id this world cannot resolve, leave it alone
                         }
                         //Snow already on it is reason enough to come back: it may need taking off
@@ -622,7 +694,17 @@ public final class SeasonalSnowRefresher {
                             }
                             aboveLight = firstLightAbove(data, aboveData, x, y + 2, z);
                         }
+                        if (watched) {
+                            watchLog("level 0 voxel: stored " + (storedSnowy ? "snowy" : "bare")
+                                    + ", above voxel raw " + Long.toHexString(aboveVoxel)
+                                    + ", sky " + (aboveLight & 0xF)
+                                    + " block " + ((aboveLight >> 4) & 0xF));
+                        }
                         if (!SeasonalSnowHooks.lightAllowsSnow(aboveLight, notSnowyNearGlow, glowLevel)) {
+                            if (watched) {
+                                watchLog("  rejected on light"
+                                        + (storedSnowy ? ", stripping the snow it had" : ""));
+                            }
                             //A definite no now that blank air has been walked through rather than
                             //taken at face value, so snow that is there has to come off.
                             if (storedSnowy) {
@@ -654,11 +736,18 @@ public final class SeasonalSnowRefresher {
                         //that is what makes this section worth reading again next time.
                         candidate |= reason != R_NO_NOT_A_SNOW_BLOCK;
                         int verdict = verdictOf(reason);
+                        if (watched) {
+                            watchLog("  " + REASON_NAMES[reason]);
+                        }
                         if (verdict == UNKNOWN) {
                             continue;
                         }
                         boolean wantSnowy = verdict == YES;
                         if (wantSnowy == storedSnowy) {
+                            if (watched) {
+                                watchLog("  already " + (storedSnowy ? "snowy" : "bare")
+                                        + ", nothing to write");
+                            }
                             continue;
                         }
 
@@ -667,11 +756,17 @@ public final class SeasonalSnowRefresher {
                         //current season anyway, so only write if nothing moved.
                         long current = data[idx];
                         if (Mapper.getBlockId(current) != stored) {
+                            if (watched) {
+                                watchLog("  voxel changed under the pass, leaving it alone");
+                            }
                             continue;
                         }
                         data[idx] = withBlockId(current,
                                 wantSnowy ? SeasonalSnowIds.mark(base) : base);
                         changed++;
+                        if (watched) {
+                            watchLog("  wrote it " + (wantSnowy ? "snowy" : "bare"));
+                        }
                     }
                 }
             }
@@ -764,6 +859,19 @@ public final class SeasonalSnowRefresher {
             int oy = (section.y << (5 - lvl)) & 31;
             int oz = (section.z << (5 - lvl)) & 31;
 
+            //Which voxel of this parent the watched block ends up inside, if any
+            int watchParentIdx = -1;
+            long wp = watchPos;
+            if (wp != Long.MIN_VALUE) {
+                int wx = BlockPos.getX(wp) >> lvl;
+                int wy = BlockPos.getY(wp) >> lvl;
+                int wz = BlockPos.getZ(wp) >> lvl;
+                if ((wx >> 5) == (section.x >> lvl) && (wy >> 5) == (section.y >> lvl)
+                        && (wz >> 5) == (section.z >> lvl)) {
+                    watchParentIdx = WorldSection.getIndex(wx & 31, wy & 31, wz & 31);
+                }
+            }
+
             boolean touched = false;
             for (int y = 0; y < side; y++) {
                 for (int z = 0; z < side; z++) {
@@ -771,15 +879,24 @@ public final class SeasonalSnowRefresher {
                         long want = computed[cubeIndex(x, y, z, side)];
                         int pidx = WorldSection.getIndex(ox + x, oy + y, oz + z);
                         long have = pdata[pidx];
-                        if (want == have) {
-                            continue;
-                        }
                         int wantId = Mapper.getBlockId(want);
                         int haveId = Mapper.getBlockId(have);
                         boolean wantSnowy = wantId >= stateCount;
                         boolean haveSnowy = haveId >= stateCount;
                         int wantBase = wantSnowy ? SeasonalSnowIds.MAX_BLOCK_ID - wantId : wantId;
                         int haveBase = haveSnowy ? SeasonalSnowIds.MAX_BLOCK_ID - haveId : haveId;
+                        if (pidx == watchParentIdx) {
+                            watchLog("level " + lvl + " parent: mip wants id " + wantBase
+                                    + (wantSnowy ? " snowy" : " bare") + ", stored id " + haveBase
+                                    + (haveSnowy ? " snowy" : " bare")
+                                    + (want == have ? " (identical)"
+                                        : wantBase != haveBase ? " (different block, left alone)"
+                                        : wantSnowy == haveSnowy ? " (same snow, left alone)"
+                                        : wantSnowy ? " -> writing snowy" : " -> writing bare"));
+                        }
+                        if (want == have) {
+                            continue;
+                        }
                         //Disagreeing about which block this is means the mip picked differently than
                         //ingest did, which is not something a season change should be rewriting
                         if (wantBase != haveBase || wantSnowy == haveSnowy) {
@@ -915,9 +1032,19 @@ public final class SeasonalSnowRefresher {
                         ? data[WorldSection.getIndex(vx, vy + 1, vz)]
                         : (aboveData == null ? OPEN_SKY : aboveData[WorldSection.getIndex(vx, 0, vz)]);
                 int lightAbove = Mapper.getLightId(aboveVoxel);
+                String aboveNote = "";
                 if (aboveVoxel == 0) {
                     lightAbove = firstLightAbove(data, aboveData, vx, vy + 2, vz);
+                    aboveNote = " (blank above, walked up to sky " + (lightAbove & 0xF) + ")";
                 }
+                //The two things that decide whether the walk ever writes here, said out loud: a
+                //section it has written off is one it will not read, and a section the store has
+                //never been given is one the walk cannot list
+                out.add("  section " + WorldEngine.pprintPos(section.key)
+                        + (isBarren(section.key) ? " is written off as unsnowable"
+                                                 : " is in the walk")
+                        + (above == null ? ", nothing stored above it"
+                                         : ", section above is loaded"));
 
                 BlockState state = mapper.getBlockStateFromBlockId(base);
                 if (state == null) {
@@ -940,7 +1067,7 @@ public final class SeasonalSnowRefresher {
                 out.add(at + describeBlock(mapper, base, stateCount, marked)
                         + " in " + biomeName
                         + ", sky " + (lightAbove & 0xF) + " block " + ((lightAbove >> 4) & 0xF)
-                        + " above" + roll + " -> " + REASON_NAMES[reason]);
+                        + " above" + aboveNote + roll + " -> " + REASON_NAMES[reason]);
             } finally {
                 if (above != null) {
                     above.release();
