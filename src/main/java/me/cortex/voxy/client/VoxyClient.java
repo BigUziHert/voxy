@@ -66,6 +66,8 @@ public class VoxyClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         me.cortex.voxy.client.core.compat.seasons.SeasonalSnow.install();
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(
+                mc -> me.cortex.voxy.client.core.compat.seasons.SeasonalSnow.onClientTick(mc.level));
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             if (VoxyCommon.isAvailable()) {

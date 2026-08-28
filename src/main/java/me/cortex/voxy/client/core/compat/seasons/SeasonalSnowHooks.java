@@ -5,9 +5,13 @@ import com.teamtea.eclipticseasons.client.core.ExtraModelManager;
 import com.teamtea.eclipticseasons.client.core.ExtraRendererContext;
 import com.teamtea.eclipticseasons.client.util.ClientCon;
 import com.teamtea.eclipticseasons.common.core.map.MapChecker;
+import com.teamtea.eclipticseasons.config.CommonConfig;
 import me.cortex.voxy.client.core.model.bakery.ReuseVertexConsumer;
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import me.cortex.voxy.common.world.other.Mapper;
+import net.minecraft.core.Holder;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.block.model.BakedQuad;
@@ -94,5 +98,63 @@ final class SeasonalSnowHooks {
                 (type == RenderType.translucent() ? translucentVC : opaqueVC).quad(quad, forceSolid, layer);
             }
         }
+    }
+
+    /**
+     * Re-decides snow for a voxel already in the store, from stored data alone. Used by the
+     * refresher, where the chunk is long gone and EclipticSeasons' own map has nothing to say
+     * about somewhere the player has never been.
+     *
+     * Returns SeasonalSnowRefresher NO / YES / UNKNOWN. UNKNOWN means leave the voxel alone.
+     */
+    static int decide(Level level, Mapper mapper, BlockState state, long aboveVoxel,
+                      Holder<Biome> biome, BlockPos pos, int stateCount) {
+        int light = Mapper.getLightId(aboveVoxel);
+        if ((light & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
+            return SeasonalSnowRefresher.NO;//Not open enough to the sky
+        }
+        if (CommonConfig.Snow.notSnowyNearGlowingBlock.get()
+                && ((light >> 4) & 0xF) >= CommonConfig.Snow.notSnowyNearGlowingBlockLevel.getAsInt()) {
+            return SeasonalSnowRefresher.NO;
+        }
+
+        int aboveStored = Mapper.getBlockId(aboveVoxel);
+        int aboveBase = aboveStored >= stateCount
+                ? me.cortex.voxy.common.compat.SeasonalSnowIds.MAX_BLOCK_ID - aboveStored
+                : aboveStored;
+        if (aboveBase < 0 || aboveBase >= stateCount) {
+            return SeasonalSnowRefresher.UNKNOWN;
+        }
+        BlockState aboveState = mapper.getBlockStateFromBlockId(aboveBase);
+        if (aboveState == null) {
+            return SeasonalSnowRefresher.UNKNOWN;
+        }
+
+        int flag = MapChecker.getDefaultBlockTypeFlag(state);
+        if (flag <= MapChecker.FLAG_NONE) {
+            return SeasonalSnowRefresher.NO;//Never a block EclipticSeasons snows
+        }
+        if (MapChecker.leaveLike(flag)) {
+            boolean specialLeaves = aboveState.is(state.getBlock())
+                    && (Heightmap.Types.MOTION_BLOCKING_NO_LEAVES.isOpaque().test(aboveState)
+                        || MapChecker.extraSnowPassable(aboveState));
+            if (specialLeaves && !CommonConfig.Snow.snowyTree.get()) {
+                return SeasonalSnowRefresher.NO;
+            }
+        } else if (MapChecker.extraSnowPassable(state) && MapChecker.extraSnowPassable(aboveState)) {
+            return SeasonalSnowRefresher.NO;
+        }
+
+        //A biome the store remembers but this world cannot resolve is not evidence of no snow
+        if (biome == null) {
+            return SeasonalSnowRefresher.UNKNOWN;
+        }
+        return MapChecker.shouldSnowAtBiome(level, biome.value(), state, level.getRandom(),
+                state.getSeed(pos), pos) ? SeasonalSnowRefresher.YES : SeasonalSnowRefresher.NO;
+    }
+
+    /** Identifies the current season, for spotting a change. Never compared for anything else. */
+    static Object seasonToken() {
+        return ClientCon.nowSolarTerm;
     }
 }

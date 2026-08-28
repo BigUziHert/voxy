@@ -70,6 +70,52 @@ public final class SeasonalSnow {
         }
     }
 
+    //Last season seen by the tick poll. EclipticSeasons 0.14.5 has no client event we can
+    //subscribe to from a fabric mod, so the current solar term is watched instead.
+    private static volatile Object lastSeason = null;
+
+    public static void onClientTick(net.minecraft.world.level.Level level) {
+        if (level == null) {
+            lastSeason = null;
+            return;
+        }
+        if (!enabled() || !VoxyConfig.CONFIG.seasonalSnowAutoRefresh) {
+            return;
+        }
+        Object token;
+        try {
+            token = SeasonalSnowHooks.seasonToken();
+        } catch (Throwable t) {
+            disable("reading the current season", t);
+            return;
+        }
+        if (token == null) {
+            return;
+        }
+        if (lastSeason == null) {
+            lastSeason = token;//First sight of a world is not a change
+            return;
+        }
+        if (token.equals(lastSeason)) {
+            return;
+        }
+        lastSeason = token;
+        refresh(level, "the season changed to " + token);
+    }
+
+    /** Returns null when a refresh started, or a reason it did not. */
+    public static String refresh(net.minecraft.world.level.Level level, String why) {
+        var engine = me.cortex.voxy.commonImpl.WorldIdentifier.ofEngineNullable(level);
+        if (engine == null) {
+            return "no voxy world for this level";
+        }
+        String blocked = SeasonalSnowRefresher.start(level, engine);
+        if (blocked == null) {
+            Logger.info("Refreshing seasonal snow over stored lods, " + why);
+        }
+        return blocked;
+    }
+
     private static void disable(String doing, Throwable t) {
         if (broken) {
             return;

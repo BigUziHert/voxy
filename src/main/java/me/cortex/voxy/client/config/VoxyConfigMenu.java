@@ -140,6 +140,12 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         ()->CFG.seasonalSnowLod, v->CFG.seasonalSnowLod=v)
                                         //Applied when a section is ingested, so already built lods
                                         //keep whatever season they were captured in
+                                        .setImpact(OptionImpact.LOW),
+                                new BoolOption(
+                                        "voxy:seasonal_snow_auto_refresh",
+                                        Component.translatable("voxy.config.general.seasonalSnowAutoRefresh"),
+                                        ()->CFG.seasonalSnowAutoRefresh, v->CFG.seasonalSnowAutoRefresh=v)
+                                        .setEnabler("voxy:seasonal_snow_lod")
                                         .setImpact(OptionImpact.LOW)
                         ), new Group(
                                 new BoolOption(

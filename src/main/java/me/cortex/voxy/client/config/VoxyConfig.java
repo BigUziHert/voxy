@@ -46,6 +46,10 @@ public class VoxyConfig {
     //only affects sections ingested from here on, since the snow is baked in at ingest time.
     public boolean seasonalSnowLod = true;
 
+    //Re-walk the stored lods when the season changes. Off by default: it rewrites voxels in the
+    //lod store, so it is opt in. /voxy seasonalsnow refresh runs the same pass by hand.
+    public boolean seasonalSnowAutoRefresh = false;
+
     //Divisor of earths radius, so 1 would be true earth curvature and larger values a smaller,
     // more sharply curved planet. 0 disables the effect and leaves the world flat.
     public int earthCurveRatio = 0;

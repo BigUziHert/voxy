@@ -31,6 +31,8 @@
 
   "voxy.config.general.seasonalSnowLod": "Seasonal snow on LODs",
   "voxy.config.general.seasonalSnowLod.tooltip": "Snows distant terrain in step with EclipticSeasons, so LODs match the nearby vanilla chunks instead of staying summer green. Requires EclipticSeasons. Snow is baked in when a section is ingested, so existing LODs keep the season they were captured in",
+  "voxy.config.general.seasonalSnowAutoRefresh": "Re-snow LODs on season change",
+  "voxy.config.general.seasonalSnowAutoRefresh.tooltip": "When the season changes, walk the stored LODs in the background and re-decide their snow, so distant terrain follows the season instead of keeping whatever it was captured under. This rewrites voxels in the LOD store, so it is off by default. Run it by hand with /voxy seasonalsnow refresh",
 
   "voxy.config.general.environmental_fog": "Enable environmental fog",
   "voxy.config.general.environmental_fog.tooltip": "Enables or disables voxy rendering environmental fog",

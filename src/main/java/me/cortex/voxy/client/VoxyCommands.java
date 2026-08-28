@@ -68,11 +68,49 @@ public class VoxyCommands {
                                 .executes(ctx->verifyTLNs(ctx, BoolArgumentType.getBool(ctx, "attemptRepair"))))
                 );
 
+        var seasonalSnow = ClientCommandManager.literal("seasonalsnow")
+                .then(ClientCommandManager.literal("refresh")
+                        .executes(VoxyCommands::refreshSeasonalSnow))
+                .then(ClientCommandManager.literal("cancel")
+                        .executes(VoxyCommands::cancelSeasonalSnow))
+                .then(ClientCommandManager.literal("status")
+                        .executes(VoxyCommands::seasonalSnowStatus));
+
         return ClientCommandManager.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(ClientCommandManager.literal("reload")
                         .executes(VoxyCommands::reloadInstance))
                 .then(imports)
+                .then(seasonalSnow)
                 .then(debug);
+    }
+
+    private static int refreshSeasonalSnow(CommandContext<FabricClientCommandSource> ctx) {
+        var level = Minecraft.getInstance().level;
+        if (level == null) {
+            ctx.getSource().sendError(Component.literal("Not in a world"));
+            return 1;
+        }
+        String blocked = me.cortex.voxy.client.core.compat.seasons.SeasonalSnow.refresh(level, "asked for by command");
+        if (blocked != null) {
+            ctx.getSource().sendError(Component.literal("Could not start: " + blocked));
+            return 1;
+        }
+        ctx.getSource().sendFeedback(Component.literal(
+                "Refreshing seasonal snow over stored LODs, this runs in the background. "
+                        + "/voxy seasonalsnow status to watch it"));
+        return 0;
+    }
+
+    private static int cancelSeasonalSnow(CommandContext<FabricClientCommandSource> ctx) {
+        me.cortex.voxy.client.core.compat.seasons.SeasonalSnowRefresher.cancel();
+        ctx.getSource().sendFeedback(Component.literal("Cancelling the seasonal snow refresh"));
+        return 0;
+    }
+
+    private static int seasonalSnowStatus(CommandContext<FabricClientCommandSource> ctx) {
+        ctx.getSource().sendFeedback(Component.literal(
+                "Seasonal snow refresh: " + me.cortex.voxy.client.core.compat.seasons.SeasonalSnowRefresher.describe()));
+        return 0;
     }
 
     private static int reloadInstance(CommandContext<FabricClientCommandSource> ctx) {
