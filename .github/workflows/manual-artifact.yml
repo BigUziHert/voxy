@@ -28,5 +28,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: voxy-artifacts
-          path: build/libs/*.jar
+          # Loom also drops the un-remapped -dev jar in build/libs, and archive:false only
+          # accepts a single file, so narrow this to the jar that actually ships.
+          path: |
+            build/libs/*.jar
+            !build/libs/*-dev.jar
+            !build/libs/*-sources.jar
           archive: false
