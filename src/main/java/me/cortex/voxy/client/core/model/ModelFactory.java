@@ -298,6 +298,20 @@ public class ModelFactory {
         return !this.bakeQueue.isEmpty();
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean colourRecaptureRequested =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /**
+     * Asks for every model's biome colour table to be captured again and re-uploaded.
+     *
+     * Only the colour buffer is rewritten, no model is re-baked and no geometry is rebuilt, so the
+     * change lands without a hitch. Safe to call from any thread: the work happens on the next tick
+     * of the bakery, which is where the biome queue is already drained.
+     */
+    public void requestColourRecapture() {
+        this.colourRecaptureRequested.set(true);
+    }
+
     private final ConcurrentLinkedDeque<Mapper.BiomeEntry> biomeQueue = new ConcurrentLinkedDeque<>();
     public void addBiome(Mapper.BiomeEntry biome) {
         this.biomeQueue.add(biome);
@@ -316,6 +330,14 @@ public class ModelFactory {
                 this.uploadResults.add(res);
             }
             biomeEntry = this.biomeQueue.poll();
+        }
+
+        //After any queued biomes, so a recapture covers them too
+        if (this.colourRecaptureRequested.compareAndSet(true, false)) {
+            var recapture = this.buildBiomeColourUpload();
+            if (recapture != null) {
+                this.uploadResults.add(recapture);
+            }
         }
 
         while (this.processModelResult());
@@ -779,6 +801,17 @@ public class ModelFactory {
             return null;
         }
 
+        return this.buildBiomeColourUpload();
+    }
+
+    /**
+     * Captures the tint of every biome dependent model, for every biome, into a fresh upload.
+     *
+     * The colours come from BlockColors, so anything that recolours foliage (EclipticSeasons
+     * does, seasonally) is picked up at the moment this runs. Voxy otherwise only runs it when a
+     * new biome shows up, which is why a season change never used to reach the gpu.
+     */
+    private BiomeUploadResult buildBiomeColourUpload() {
         if (this.modelsRequiringBiomeColours.isEmpty()) return null;
 
         var result = new BiomeUploadResult(this.biomes.size(), this.modelsRequiringBiomeColours.size());

@@ -194,6 +194,10 @@ public class VoxyRenderSystem {
     }
 
 
+    public ModelBakerySubsystem getModelService() {
+        return this.modelService;
+    }
+
     public Viewport<?> setupViewport(Matrix4fc vanillaProjection, Matrix4fc modelView, double cameraX, double cameraY, double cameraZ) {
         var viewport = this.getViewport();
         if (viewport == null) {

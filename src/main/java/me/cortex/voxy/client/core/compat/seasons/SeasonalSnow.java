@@ -2,7 +2,6 @@ package me.cortex.voxy.client.core.compat.seasons;
 
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
-import net.minecraft.client.Minecraft;
 import me.cortex.voxy.client.core.model.bakery.ReuseVertexConsumer;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.compat.SeasonalSnowIds;
@@ -119,27 +118,22 @@ public final class SeasonalSnow {
      * and biome colour table it uploads to the gpu, so the colours are correct for whichever season
      * was current when they were captured and frozen from then on. Rebuilding is what recaptures them.
      *
-     * Blunter than it needs to be: only the colour table has gone stale, but there is no entry point
-     * to recapture just that, so the renderer is rebuilt. It costs a hitch while geometry comes back,
-     * and it happens once per solar term.
+     * Only the colour buffer is rewritten. No model is re-baked and no geometry is rebuilt, so this
+     * lands without a hitch.
      */
     public static void reloadColours() {
         if (!MOD_PRESENT) {
             return;
         }
-        //Touching the renderer off the render thread is not safe
-        Minecraft.getInstance().execute(() -> {
-            try {
-                var renderer = Minecraft.getInstance().levelRenderer;
-                if (renderer instanceof IGetVoxyRenderSystem voxy) {
-                    voxy.voxy$shutdownRenderer();
-                    voxy.voxy$createRenderer();
-                    Logger.info("Rebuilt voxy lods so their colours match the current season");
-                }
-            } catch (Throwable t) {
-                Logger.error("Failed to rebuild lod colours for the season", t);
+        try {
+            var renderSystem = IGetVoxyRenderSystem.getNullable();
+            if (renderSystem == null) {
+                return;//No renderer yet, whatever gets built will capture the current season anyway
             }
-        });
+            renderSystem.getModelService().requestColourRecapture();
+        } catch (Throwable t) {
+            disable("asking for lod colours to be recaptured", t);
+        }
     }
 
     /** Returns null when a refresh started, or a reason it did not. */

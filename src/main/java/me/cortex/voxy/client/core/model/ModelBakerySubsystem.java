@@ -85,6 +85,10 @@ public class ModelBakerySubsystem {
         LockSupport.unpark(this.processingThread);
     }
 
+    public void requestColourRecapture() {
+        this.factory.requestColourRecapture();
+    }
+
     public void addBiome(Mapper.BiomeEntry biomeEntry) {
         this.factory.addBiome(biomeEntry);
         LockSupport.unpark(this.processingThread);
