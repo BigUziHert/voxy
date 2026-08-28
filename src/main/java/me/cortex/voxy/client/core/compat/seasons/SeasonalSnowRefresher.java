@@ -476,10 +476,16 @@ public final class SeasonalSnowRefresher {
                         }
 
                         if (!SeasonalSnowHooks.lightAllowsSnow(aboveVoxel, notSnowyNearGlow, glowLevel)) {
-                            //A definite no, not an unknown, so snow that is there has to come off
+                            //A definite no, not an unknown, so snow that is there has to come off.
+                            //Re-read first for the same reason the write below does: ingest may have
+                            //replaced this voxel, and rewriting it from the stale read would carry
+                            //the old light and biome back in with it.
                             if (storedSnowy) {
-                                data[idx] = withBlockId(voxel, base);
-                                changed++;
+                                long dark = data[idx];
+                                if (Mapper.getBlockId(dark) == stored) {
+                                    data[idx] = withBlockId(dark, base);
+                                    changed++;
+                                }
                             }
                             continue;
                         }
