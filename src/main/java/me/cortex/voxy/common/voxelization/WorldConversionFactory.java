@@ -221,7 +221,10 @@ public class WorldConversionFactory {
         //which is not written yet during the fill above. Air is never marked, so the count stands.
         var snowOracle = SeasonalSnowIds.ORACLE;
         if (snowOracle != null) {
-            snowOracle.markSection(data, stateMapper, section);
+            //The lighting supplier doubles as the window onto the section above when whoever built
+            //it could see one, which is what lets the top row be decided at all
+            snowOracle.markSection(data, stateMapper, section,
+                    lightSupplier instanceof IAboveSectionData above ? above : null);
         }
 
         section.lvl0NonAirCount = nonZeroCnt;

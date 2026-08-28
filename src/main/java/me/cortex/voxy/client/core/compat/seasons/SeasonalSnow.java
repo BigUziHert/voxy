@@ -5,6 +5,7 @@ import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.model.bakery.ReuseVertexConsumer;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.compat.SeasonalSnowIds;
+import me.cortex.voxy.common.voxelization.IAboveSectionData;
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import me.cortex.voxy.common.world.other.Mapper;
 import net.fabricmc.loader.api.FabricLoader;
@@ -45,12 +46,13 @@ public final class SeasonalSnow {
         Logger.info("EclipticSeasons found, seasonal snow on lods is available");
     }
 
-    private static void markSection(long[] data, Mapper mapper, VoxelizedSection section) {
+    private static void markSection(long[] data, Mapper mapper, VoxelizedSection section,
+                                    IAboveSectionData above) {
         if (!enabled()) {
             return;
         }
         try {
-            SeasonalSnowHooks.markSection(data, mapper, section);
+            SeasonalSnowHooks.markSection(data, mapper, section, above);
         } catch (Throwable t) {
             disable("deciding snow over a freshly ingested section", t);
         }

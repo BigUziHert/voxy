@@ -1,5 +1,6 @@
 package me.cortex.voxy.common.compat;
 
+import me.cortex.voxy.common.voxelization.IAboveSectionData;
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import me.cortex.voxy.common.world.other.Mapper;
 
@@ -31,8 +32,12 @@ public final class SeasonalSnowIds {
          * needs the voxel above and that is not written yet while the fill is in progress. It also
          * lets ingest run the exact same decision as the refresher, which is what stops a re-ingest
          * from disagreeing with a refresh and undoing it.
+         *
+         * above is the row over the top of the section, or null when the caller could not see it.
+         * Null means the top row is left undecided, never that it is decided as if nothing were
+         * there: a store walk covers it later with data it can actually read.
          */
-        void markSection(long[] data, Mapper mapper, VoxelizedSection section);
+        void markSection(long[] data, Mapper mapper, VoxelizedSection section, IAboveSectionData above);
     }
 
     /** Null until the client installs one, and stays null when EclipticSeasons is absent. */

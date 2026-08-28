@@ -475,7 +475,8 @@ public final class SeasonalSnowRefresher {
                                     ? OPEN_SKY : aboveData[WorldSection.getIndex(x, 0, z)];
                         }
 
-                        if (!SeasonalSnowHooks.lightAllowsSnow(aboveVoxel, notSnowyNearGlow, glowLevel)) {
+                        int aboveLight = Mapper.getLightId(aboveVoxel);
+                        if (!SeasonalSnowHooks.lightAllowsSnow(aboveLight, notSnowyNearGlow, glowLevel)) {
                             //A definite no, not an unknown, so snow that is there has to come off.
                             //Re-read first for the same reason the write below does: ingest may have
                             //replaced this voxel, and rewriting it from the stale read would carry
@@ -498,8 +499,9 @@ public final class SeasonalSnowRefresher {
                         BlockPos pos = new BlockPos(
                                 (section.x << 5) + x, (section.y << 5) + y, (section.z << 5) + z);
 
-                        int verdict = SeasonalSnowHooks.decide(level, mapper, state, aboveVoxel, biome,
-                                pos, stateCount, notSnowyNearGlow, glowLevel, snowyTree);
+                        int verdict = SeasonalSnowHooks.decide(level, state, aboveLight,
+                                SeasonalSnowHooks.aboveStateOf(mapper, aboveVoxel, stateCount), biome,
+                                pos, notSnowyNearGlow, glowLevel, snowyTree);
                         if (verdict == UNKNOWN) {
                             continue;
                         }
@@ -767,8 +769,9 @@ public final class SeasonalSnowRefresher {
                 }
                 Holder<Biome> biome = biomes.get(biomeId);
                 BlockPos pos = new BlockPos((sx << 5) + vx, (sy << 5) + vy, (sz << 5) + vz);
-                int reason = SeasonalSnowHooks.explain(level, mapper, state, aboveVoxel, biome, pos,
-                        stateCount, notSnowyNearGlow, glowLevel, snowyTree);
+                int reason = SeasonalSnowHooks.explain(level, state, lightAbove,
+                        SeasonalSnowHooks.aboveStateOf(mapper, aboveVoxel, stateCount), biome, pos,
+                        notSnowyNearGlow, glowLevel, snowyTree);
                 String roll = "";
                 if (biome != null) {
                     int depth = SeasonalSnowHooks.snowDepthValue(level, biome.value());
@@ -897,9 +900,10 @@ public final class SeasonalSnowRefresher {
                                             ? data[WorldSection.getIndex(x, y + 1, z)]
                                             : (aboveData == null ? OPEN_SKY
                                                : aboveData[WorldSection.getIndex(x, 0, z)]);
-                                    if (!SeasonalSnowHooks.lightAllowsSnow(aboveVoxel,
+                                    int aboveLight = Mapper.getLightId(aboveVoxel);
+                                    if (!SeasonalSnowHooks.lightAllowsSnow(aboveLight,
                                             notSnowyNearGlow, glowLevel)) {
-                                        reasons[(Mapper.getLightId(aboveVoxel) & 0xF) <= MIN_SKY_LIGHT
+                                        reasons[(aboveLight & 0xF) <= MIN_SKY_LIGHT
                                                 ? R_NO_SKY_LIGHT : R_NO_BLOCK_LIGHT]++;
                                         continue;
                                     }
@@ -911,8 +915,9 @@ public final class SeasonalSnowRefresher {
                                     Holder<Biome> biome = biomes.get(biomeId);
                                     BlockPos pos = new BlockPos((sx << 5) + x, (sy << 5) + y,
                                             (sz << 5) + z);
-                                    int reason = SeasonalSnowHooks.explain(level, mapper, state,
-                                            aboveVoxel, biome, pos, stateCount, notSnowyNearGlow,
+                                    int reason = SeasonalSnowHooks.explain(level, state, aboveLight,
+                                            SeasonalSnowHooks.aboveStateOf(mapper, aboveVoxel,
+                                                    stateCount), biome, pos, notSnowyNearGlow,
                                             glowLevel, snowyTree);
                                     if (reason == R_NO_BIOME_HAS_NO_SNOW && biome != null) {
                                         if (biomeId >= 0 && biomeId < depthCache.length

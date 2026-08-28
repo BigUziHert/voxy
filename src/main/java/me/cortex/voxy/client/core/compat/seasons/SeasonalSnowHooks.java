@@ -6,6 +6,7 @@ import com.teamtea.eclipticseasons.client.util.ClientCon;
 import com.teamtea.eclipticseasons.common.core.biome.WeatherManager;
 import com.teamtea.eclipticseasons.common.core.map.MapChecker;
 import me.cortex.voxy.client.core.model.bakery.ReuseVertexConsumer;
+import me.cortex.voxy.common.voxelization.IAboveSectionData;
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import me.cortex.voxy.common.world.other.Mapper;
 import net.minecraft.core.Holder;
@@ -76,10 +77,11 @@ final class SeasonalSnowHooks {
      * of no snow. Trusting it meant a re-ingest wrote bare terrain over ground a refresh had
      * correctly snowed, so flying around slowly stripped the world back.
      *
-     * The top row is left undecided: nothing here can see the section above it. The refresher
-     * covers that row, since a level 0 world section is 32 voxels tall and this one is 16.
+     * The top row has no voxel above it inside this section, so it is decided from the section
+     * above when the caller could see one and left alone when it could not. Left alone means left
+     * alone: a store walk reaches it later with data it can actually read.
      */
-    static void markSection(long[] data, Mapper mapper, VoxelizedSection section) {
+    static void markSection(long[] data, Mapper mapper, VoxelizedSection section, IAboveSectionData above) {
         Level level = ClientCon.getUseLevel();
         if (level == null) {
             return;
@@ -97,17 +99,37 @@ final class SeasonalSnowHooks {
             BIOME_TRIED.set(tried);
         }
 
-        //Index layout is (y<<8)|(z<<4)|x, so the voxel above is +256 and the top row has none
-        for (int i = 0; i < 0xF00; i++) {
+        //Index layout is (y<<8)|(z<<4)|x, so the voxel above is +256 except on the top row
+        for (int i = 0; i <= 0xFFF; i++) {
             long voxel = data[i];
             int blockId = Mapper.getBlockId(voxel);
             if (blockId <= 0 || blockId >= stateCount) {
                 continue;//Air, or already marked, or not resolvable
             }
-            //Reject on light before resolving anything: this runs during chunk load, and almost
-            //every voxel in a section is underground
-            if (!lightAllowsSnow(data[i + 256], cfgGlow, cfgGlowLvl)) {
-                continue;
+
+            int y = (i >> 8) & 0xF;
+            int aboveLight;
+            BlockState aboveState;
+            if (y < 0xF) {
+                long aboveVoxel = data[i + 256];
+                //Reject on light before resolving anything: this runs during chunk load, and almost
+                //every voxel in a section is underground
+                aboveLight = Mapper.getLightId(aboveVoxel);
+                if (!lightAllowsSnow(aboveLight, cfgGlow, cfgGlowLvl)) {
+                    continue;
+                }
+                aboveState = aboveStateOf(mapper, aboveVoxel, stateCount);
+            } else {
+                if (above == null) {
+                    continue;//Nothing above to judge by, so do not judge
+                }
+                int x = i & 0xF;
+                int z = (i >> 4) & 0xF;
+                aboveLight = above.lightAbove(x, z) & 0xFF;
+                if (!lightAllowsSnow(aboveLight, cfgGlow, cfgGlowLvl)) {
+                    continue;
+                }
+                aboveState = above.stateAbove(x, z);
             }
 
             BlockState state = mapper.getBlockStateFromBlockId(blockId);
@@ -135,16 +157,32 @@ final class SeasonalSnowHooks {
 
             BlockPos pos = new BlockPos(
                     (section.x << 4) + (i & 0xF),
-                    (section.y << 4) + ((i >> 8) & 0xF),
+                    (section.y << 4) + y,
                     (section.z << 4) + ((i >> 4) & 0xF));
 
-            int verdict = decide(level, mapper, state, data[i + 256], biome, pos, stateCount,
+            int verdict = decide(level, state, aboveLight, aboveState, biome, pos,
                     cfgGlow, cfgGlowLvl, cfgTree);
             if (verdict == SeasonalSnowRefresher.YES) {
                 data[i] = SeasonalSnowRefresher.withBlockId(voxel,
                         me.cortex.voxy.common.compat.SeasonalSnowIds.mark(blockId));
             }
         }
+    }
+
+    /**
+     * The block a stored voxel holds, un-marked, or null when this world cannot resolve it. Split
+     * out because the decision needs the block above as a state, and callers reach it from a voxel
+     * or straight from the chunk depending on which side they are.
+     */
+    static BlockState aboveStateOf(Mapper mapper, long aboveVoxel, int stateCount) {
+        int stored = Mapper.getBlockId(aboveVoxel);
+        int base = stored >= stateCount
+                ? me.cortex.voxy.common.compat.SeasonalSnowIds.MAX_BLOCK_ID - stored
+                : stored;
+        if (base < 0 || base >= stateCount) {
+            return null;
+        }
+        return mapper.getBlockStateFromBlockId(base);
     }
 
     /**
@@ -156,12 +194,11 @@ final class SeasonalSnowHooks {
      * mipped light at higher levels does not mean the same thing and is never consulted, see
      * SeasonalSnowRefresher.
      */
-    static boolean lightAllowsSnow(long aboveVoxel, boolean notSnowyNearGlow, int glowLevel) {
-        int light = Mapper.getLightId(aboveVoxel);
-        if ((light & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
+    static boolean lightAllowsSnow(int aboveLight, boolean notSnowyNearGlow, int glowLevel) {
+        if ((aboveLight & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
             return false;
         }
-        return !(notSnowyNearGlow && ((light >> 4) & 0xF) >= glowLevel);
+        return !(notSnowyNearGlow && ((aboveLight >> 4) & 0xF) >= glowLevel);
     }
 
     static void renderSnowOverlay(BlockState state, RenderType layer, ReuseVertexConsumer translucentVC, ReuseVertexConsumer opaqueVC) {
@@ -206,33 +243,23 @@ final class SeasonalSnowHooks {
      *
      * Returns SeasonalSnowRefresher NO / YES / UNKNOWN. UNKNOWN means leave the voxel alone.
      */
-    static int decide(Level level, Mapper mapper, BlockState state, long aboveVoxel,
-                      Holder<Biome> biome, BlockPos pos, int stateCount,
+    static int decide(Level level, BlockState state, int aboveLight, BlockState aboveState,
+                      Holder<Biome> biome, BlockPos pos,
                       boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
-        return SeasonalSnowRefresher.verdictOf(explain(level, mapper, state, aboveVoxel, biome, pos,
-                stateCount, notSnowyNearGlow, glowLevel, snowyTree));
+        return SeasonalSnowRefresher.verdictOf(explain(level, state, aboveLight, aboveState, biome,
+                pos, notSnowyNearGlow, glowLevel, snowyTree));
     }
 
     /** The decision itself, as a SeasonalSnowRefresher R_ reason. See decide for the verdict. */
-    static int explain(Level level, Mapper mapper, BlockState state, long aboveVoxel,
-                       Holder<Biome> biome, BlockPos pos, int stateCount,
+    static int explain(Level level, BlockState state, int aboveLight, BlockState aboveState,
+                       Holder<Biome> biome, BlockPos pos,
                        boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
-        int light = Mapper.getLightId(aboveVoxel);
-        if ((light & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
+        if ((aboveLight & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
             return SeasonalSnowRefresher.R_NO_SKY_LIGHT;
         }
-        if (notSnowyNearGlow && ((light >> 4) & 0xF) >= glowLevel) {
+        if (notSnowyNearGlow && ((aboveLight >> 4) & 0xF) >= glowLevel) {
             return SeasonalSnowRefresher.R_NO_BLOCK_LIGHT;
         }
-
-        int aboveStored = Mapper.getBlockId(aboveVoxel);
-        int aboveBase = aboveStored >= stateCount
-                ? me.cortex.voxy.common.compat.SeasonalSnowIds.MAX_BLOCK_ID - aboveStored
-                : aboveStored;
-        if (aboveBase < 0 || aboveBase >= stateCount) {
-            return SeasonalSnowRefresher.R_UNKNOWN_ABOVE_UNRESOLVABLE;
-        }
-        BlockState aboveState = mapper.getBlockStateFromBlockId(aboveBase);
         if (aboveState == null) {
             return SeasonalSnowRefresher.R_UNKNOWN_ABOVE_UNRESOLVABLE;
         }
