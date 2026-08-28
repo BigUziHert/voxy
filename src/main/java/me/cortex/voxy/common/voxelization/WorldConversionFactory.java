@@ -173,10 +173,6 @@ public class WorldConversionFactory {
 
 
         int nonZeroCnt = 0;
-        //Null unless EclipticSeasons is installed and seasonal snow is on. Read once rather
-        //than per block: this loop runs 4096 times per section.
-        final SeasonalSnowIds.SnowOracle snowOracle = SeasonalSnowIds.ORACLE;
-
         if (blockContainer.data.storage instanceof SimpleBitStorage bStor) {
             var bDat = bStor.getRaw();
             int iterPerLong = (64 / bStor.getBits()) - 1;
@@ -202,11 +198,7 @@ public class WorldConversionFactory {
 
                 byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
                 nonZeroCnt += (bId != 0)?1:0;
-                int biomeId = biomes[Integer.compress(i,0b1100_1100_1100)];
-                if (snowOracle != null) {
-                    bId = snowOracle.markIfSnowy(bId, stateMapper, i, section, biomeId);
-                }
-                data[i] = Mapper.composeMappingId(light, bId, biomeId);
+                data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i,0b1100_1100_1100)]);
             }
         } else {
             if (!(blockContainer.data.storage instanceof ZeroBitStorage)) {
@@ -221,13 +213,17 @@ public class WorldConversionFactory {
                 nonZeroCnt = 4096;
                 for (int i = 0; i <= 0xFFF; i++) {
                     byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
-                    int biomeId = biomes[Integer.compress(i,0b1100_1100_1100)];
-                    int sId = snowOracle == null ? bId
-                            : snowOracle.markIfSnowy(bId, stateMapper, i, section, biomeId);
-                    data[i] = Mapper.composeMappingId(light, sId, biomeId);
+                    data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i,0b1100_1100_1100)]);
                 }
             }
         }
+        //Seasonal snow is decided over the finished array: the decision needs the voxel above,
+        //which is not written yet during the fill above. Air is never marked, so the count stands.
+        var snowOracle = SeasonalSnowIds.ORACLE;
+        if (snowOracle != null) {
+            snowOracle.markSection(data, stateMapper, section);
+        }
+
         section.lvl0NonAirCount = nonZeroCnt;
         return section;
     }

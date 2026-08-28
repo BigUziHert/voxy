@@ -17,7 +17,9 @@ import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.SectionPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.LeavesBlock;
@@ -45,23 +47,95 @@ final class SeasonalSnowHooks {
     //so the same constant seed vanilla uses for model randomisation is used throughout
     private static final long SEED = 42L;
 
-    static boolean isSnowy(int blockId, Mapper mapper, int index, VoxelizedSection section) {
-        BlockState state = mapper.getBlockStateFromBlockId(blockId);
-        if (MapChecker.getDefaultBlockTypeFlag(state) <= MapChecker.FLAG_NONE) {
-            return false;//Not a block EclipticSeasons ever puts snow on
+    //Resolved once. EclipticSeasons' snow config is not something that changes mid session, and
+    //reflecting per section during ingest would show up in chunk load times.
+    private static volatile boolean cfgRead = false;
+    private static boolean cfgGlow;
+    private static int cfgGlowLvl;
+    private static boolean cfgTree;
+
+    private static void ensureConfig() {
+        if (!cfgRead) {
+            cfgGlow = cfgNotSnowyNearGlow();
+            cfgGlowLvl = cfgGlowLevel();
+            cfgTree = cfgSnowyTree();
+            cfgRead = true;
         }
+    }
+
+    //Biome holders resolved per ingest thread, a registry lookup per voxel would be far too slow
+    private static final ThreadLocal<Holder<Biome>[]> BIOME_CACHE = new ThreadLocal<>();
+    private static final ThreadLocal<boolean[]> BIOME_TRIED = new ThreadLocal<>();
+
+    /**
+     * Decides snow over a freshly ingested 16^3 section, in place.
+     *
+     * Deliberately the same decision the refresher makes, rather than asking
+     * EclipticSeasonsApi#isSnowyBlock. That api answers from EclipticSeasons' own client region
+     * map, which is not populated for everything voxy ingests, and a false from it is not evidence
+     * of no snow. Trusting it meant a re-ingest wrote bare terrain over ground a refresh had
+     * correctly snowed, so flying around slowly stripped the world back.
+     */
+    static void markSection(long[] data, Mapper mapper, VoxelizedSection section) {
         Level level = ClientCon.getUseLevel();
         if (level == null) {
-            return false;
+            return;
         }
-        //Only ask about chunks EclipticSeasons has snow data for, otherwise it cannot answer and
-        //the block would be ingested as bare while a later pass says otherwise
-        if (!MapChecker.isLoaded(level, section.x, section.z)) {
-            return false;
+        ensureConfig();
+
+        int stateCount = mapper.getBlockStateCount();
+        int biomeCount = Math.max(mapper.getBiomeEntries().length, 1);
+        Holder<Biome>[] cache = BIOME_CACHE.get();
+        boolean[] tried = BIOME_TRIED.get();
+        if (cache == null || cache.length < biomeCount) {
+            cache = new Holder[biomeCount];
+            tried = new boolean[biomeCount];
+            BIOME_CACHE.set(cache);
+            BIOME_TRIED.set(tried);
         }
-        BlockPos pos = SectionPos.of(section.x, section.y, section.z).origin()
-                .offset(index & 0xF, (index >> 8) & 0xF, (index >> 4) & 0xF);
-        return EclipticSeasonsApi.getInstance().isSnowyBlock(level, state, pos);
+
+        //Index layout is (y<<8)|(z<<4)|x, so the voxel above is +256 and the top row has none
+        for (int i = 0; i < 0xF00; i++) {
+            long voxel = data[i];
+            int blockId = Mapper.getBlockId(voxel);
+            if (blockId <= 0 || blockId >= stateCount) {
+                continue;//Air, or already marked, or not resolvable
+            }
+            BlockState state = mapper.getBlockStateFromBlockId(blockId);
+            if (state == null) {
+                continue;
+            }
+
+            int biomeId = Mapper.getBiomeId(voxel);
+            Holder<Biome> biome = null;
+            if (biomeId >= 0 && biomeId < cache.length) {
+                if (!tried[biomeId]) {
+                    tried[biomeId] = true;
+                    try {
+                        cache[biomeId] = level.registryAccess()
+                                .registryOrThrow(Registries.BIOME)
+                                .getHolder(ResourceKey.create(Registries.BIOME,
+                                        ResourceLocation.parse(mapper.getBiomeEntries()[biomeId].biome)))
+                                .orElse(null);
+                    } catch (Throwable ignored) {
+                        cache[biomeId] = null;
+                    }
+                }
+                biome = cache[biomeId];
+            }
+
+            BlockPos pos = new BlockPos(
+                    (section.x << 4) + (i & 0xF),
+                    (section.y << 4) + ((i >> 8) & 0xF),
+                    (section.z << 4) + ((i >> 4) & 0xF));
+
+            int verdict = decide(level, mapper, state, data[i + 256], biome, pos, stateCount,
+                    cfgGlow, cfgGlowLvl, cfgTree);
+            if (verdict == SeasonalSnowRefresher.YES) {
+                data[i] = (voxel & ~(((1L << 20) - 1) << 27))
+                        | ((me.cortex.voxy.common.compat.SeasonalSnowIds.mark(blockId) & ((1L << 20) - 1)) << 27);
+            }
+        }
     }
 
     static void renderSnowOverlay(BlockState state, RenderType layer, ReuseVertexConsumer translucentVC, ReuseVertexConsumer opaqueVC) {

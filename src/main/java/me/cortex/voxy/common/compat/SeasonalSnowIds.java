@@ -24,7 +24,15 @@ public final class SeasonalSnowIds {
 
     @FunctionalInterface
     public interface SnowOracle {
-        int markIfSnowy(int blockId, Mapper mapper, int index, VoxelizedSection section, int biomeId);
+        /**
+         * Marks the snowed voxels of a freshly built 16^3 section, in place.
+         *
+         * Runs over the finished array rather than per block during the fill, because deciding snow
+         * needs the voxel above and that is not written yet while the fill is in progress. It also
+         * lets ingest run the exact same decision as the refresher, which is what stops a re-ingest
+         * from disagreeing with a refresh and undoing it.
+         */
+        void markSection(long[] data, Mapper mapper, VoxelizedSection section);
     }
 
     /** Null until the client installs one, and stays null when EclipticSeasons is absent. */

@@ -40,21 +40,18 @@ public final class SeasonalSnow {
         if (!MOD_PRESENT) {
             return;
         }
-        SeasonalSnowIds.ORACLE = SeasonalSnow::markIfSnowy;
+        SeasonalSnowIds.ORACLE = SeasonalSnow::markSection;
         Logger.info("EclipticSeasons found, seasonal snow on lods is available");
     }
 
-    private static int markIfSnowy(int blockId, Mapper mapper, int index, VoxelizedSection section, int biomeId) {
+    private static void markSection(long[] data, Mapper mapper, VoxelizedSection section) {
         if (!enabled()) {
-            return blockId;
+            return;
         }
         try {
-            return SeasonalSnowHooks.isSnowy(blockId, mapper, index, section)
-                    ? SeasonalSnowIds.mark(blockId)
-                    : blockId;
+            SeasonalSnowHooks.markSection(data, mapper, section);
         } catch (Throwable t) {
-            disable("deciding whether a block is snowy", t);
-            return blockId;
+            disable("deciding snow over a freshly ingested section", t);
         }
     }
 
