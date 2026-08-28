@@ -4,6 +4,7 @@ import com.teamtea.eclipticseasons.api.EclipticSeasonsApi;
 import com.teamtea.eclipticseasons.client.core.ExtraModelManager;
 import com.teamtea.eclipticseasons.client.core.ExtraRendererContext;
 import com.teamtea.eclipticseasons.client.util.ClientCon;
+import com.teamtea.eclipticseasons.common.core.biome.WeatherManager;
 import com.teamtea.eclipticseasons.common.core.map.MapChecker;
 import me.cortex.voxy.client.core.model.bakery.ReuseVertexConsumer;
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
@@ -228,8 +229,17 @@ final class SeasonalSnowHooks {
         if (biome == null) {
             return SeasonalSnowRefresher.UNKNOWN;
         }
-        return MapChecker.shouldSnowAtBiome(level, biome.value(), state, level.getRandom(),
-                state.getSeed(pos), pos) ? SeasonalSnowRefresher.YES : SeasonalSnowRefresher.NO;
+        if (MapChecker.shouldSnowAtBiome(level, biome.value(), state, level.getRandom(),
+                state.getSeed(pos), pos)) {
+            return SeasonalSnowRefresher.YES;
+        }
+        //shouldSnowAtBiome is snowDepthAtBiome(biome) > |seed % 100|, and getSnowDepthAtBiome
+        //answers 0 both for a biome with no snow and for a biome EclipticSeasons has no weather
+        //for at all. Taking the second as a no is what stripped snow off distant biomes the client
+        //had never been told about. Only trust a no when the weather is actually known.
+        return WeatherManager.getBiomeWeather(level, biome.value()) == null
+                ? SeasonalSnowRefresher.UNKNOWN
+                : SeasonalSnowRefresher.NO;
     }
 
     //CommonConfig.Snow's fields are declared as ModConfigSpec.BooleanValue and IntValue, NeoForge
@@ -275,8 +285,27 @@ final class SeasonalSnowHooks {
         return true;//EclipticSeasons' own default
     }
 
-    /** Identifies the current season, for spotting a change. Never compared for anything else. */
-    static Object seasonToken() {
-        return ClientCon.nowSolarTerm;
+    /**
+     * Identifies the current snow situation, for spotting a change. Never compared for anything else.
+     *
+     * The solar term alone is not enough. Snow depth per biome falls gradually as it melts, and the
+     * decision reads that depth, so a single pass on the term change jumps straight to the end state
+     * while the world near you is still melting. Quantising the depths puts a handful of steps in
+     * that curve instead, so the distance follows the melt down rather than beating it to the bottom.
+     */
+    static Object snowStateToken(Level level) {
+        int hash = ClientCon.nowSolarTerm == null ? 0 : ClientCon.nowSolarTerm.hashCode();
+        try {
+            var biomes = WeatherManager.getBiomeList(level);
+            if (biomes != null) {
+                for (var weather : biomes) {
+                    //Coarse: a step per ten percent of depth, so a full melt is a handful of passes
+                    hash = hash * 31 + (weather == null ? 0 : weather.getSnowDepth() / 10);
+                }
+            }
+        } catch (Throwable ignored) {
+            //Fall back to the solar term alone
+        }
+        return hash;
     }
 }

@@ -71,6 +71,7 @@ public final class SeasonalSnow {
     //Last season seen by the tick poll. EclipticSeasons 0.14.5 has no client event we can
     //subscribe to from a fabric mod, so the current solar term is watched instead.
     private static volatile Object lastSeason = null;
+    private static int tickCounter = 0;
 
     public static void onClientTick(net.minecraft.world.level.Level level) {
         //Always, even with the feature off: a run that was cancelled or a world that changed can
@@ -87,9 +88,13 @@ public final class SeasonalSnow {
         if (!VoxyConfig.CONFIG.seasonalSnowAutoRefresh && !VoxyConfig.CONFIG.seasonalColourReload) {
             return;//Nothing to do on a season change
         }
+        //Once a second is plenty: this walks the biome weather list
+        if ((tickCounter++ % 20) != 0) {
+            return;
+        }
         Object token;
         try {
-            token = SeasonalSnowHooks.seasonToken();
+            token = SeasonalSnowHooks.snowStateToken(level);
         } catch (Throwable t) {
             disable("reading the current season", t);
             return;
@@ -109,7 +114,7 @@ public final class SeasonalSnow {
             reloadColours();
         }
         if (VoxyConfig.CONFIG.seasonalSnowAutoRefresh) {
-            refresh(level, "the season changed to " + token);
+            refresh(level, "the snow changed with the season");
         }
     }
 
