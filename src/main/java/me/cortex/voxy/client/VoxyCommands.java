@@ -104,6 +104,10 @@ public class VoxyCommands {
             ctx.getSource().sendError(Component.literal("Not in a world"));
             return 1;
         }
+        //Asked for by hand, so reconsider everything: a section written off as unsnowable by an
+        //earlier pass stays written off for the session, and those classifications have been wrong
+        //before now
+        me.cortex.voxy.client.core.compat.seasons.SeasonalSnowRefresher.forgetBarren();
         String blocked = me.cortex.voxy.client.core.compat.seasons.SeasonalSnow.refresh(level, "asked for by command");
         if (blocked != null) {
             ctx.getSource().sendError(Component.literal("Could not start: " + blocked));

@@ -102,6 +102,36 @@ public final class SeasonalSnowRefresher {
     //the walk that open ground was buried.
     private static final long OPEN_SKY = Mapper.airWithLight(0x0F);
 
+    /**
+     * The light of the first voxel above this one that has anything to say.
+     *
+     * A voxel of all zero is air with no light and no biome, and that is what voxy writes for a
+     * chunk section it was handed no light layers for - which is exactly what a fully lit air
+     * section above the surface looks like. Whether such a section is in the store at the moment
+     * you ask is a matter of what has been evicted, so reading only the voxel immediately above
+     * made the answer depend on the cache: a missing section counted as open sky and a resident one
+     * as pitch black, for the same block, in the same pass. Walking up until something carries a
+     * light or a block gives the same answer either way. A solid block stops the walk with its own
+     * light, which is zero, so being roofed over still reads as roofed over.
+     */
+    private static int firstLightAbove(long[] data, long[] aboveData, int x, int startY, int z) {
+        for (int yy = startY; yy < SECTION_WIDTH; yy++) {
+            long v = data[WorldSection.getIndex(x, yy, z)];
+            if (v != 0) {
+                return Mapper.getLightId(v);
+            }
+        }
+        if (aboveData != null) {
+            for (int yy = Math.max(0, startY - SECTION_WIDTH); yy < SECTION_WIDTH; yy++) {
+                long v = aboveData[WorldSection.getIndex(x, yy, z)];
+                if (v != 0) {
+                    return Mapper.getLightId(v);
+                }
+            }
+        }
+        return Mapper.getLightId(OPEN_SKY);
+    }
+
     //How many sections between yields. The walk is deliberately one thread that gives a slice back
     //regularly rather than several that compete with render and ingest for the whole machine.
     private static final int SECTIONS_PER_BATCH = 128;
@@ -168,6 +198,22 @@ public final class SeasonalSnowRefresher {
                 return;
             }
             barren.remove(WorldEngine.getWorldSectionId(0, sectionX >> 1, sectionY >> 1, sectionZ >> 1));
+        }
+    }
+
+    /**
+     * Throws away every barren classification.
+     *
+     * A classification is only as good as the data it was made against, and this pass has been
+     * wrong about that data before: a section whose only exposed row read as unlit because the air
+     * above it was stored blank was written off as unsnowable and then never looked at again, for
+     * the rest of the session. Asking for a refresh by hand is asking for the whole store to be
+     * reconsidered, so it starts from nothing. The automatic pass on a season change keeps the skip,
+     * which is what it is for.
+     */
+    public static void forgetBarren() {
+        synchronized (BARREN_LOCK) {
+            barren.clear();
         }
     }
 
@@ -566,17 +612,20 @@ public final class SeasonalSnowRefresher {
                         }
 
                         int aboveLight = Mapper.getLightId(aboveVoxel);
+                        if (aboveVoxel == 0) {
+                            //Blank air says nothing, so keep looking up, see firstLightAbove
+                            if (!aboveResolved) {
+                                aboveResolved = true;
+                                above = engine.acquireIfExists(section.lvl, section.x,
+                                        section.y + 1, section.z);
+                                aboveData = above == null ? null : above._unsafeGetRawDataArray();
+                            }
+                            aboveLight = firstLightAbove(data, aboveData, x, y + 2, z);
+                        }
                         if (!SeasonalSnowHooks.lightAllowsSnow(aboveLight, notSnowyNearGlow, glowLevel)) {
-                            //A definite no, so snow that is there has to come off. Air with not one
-                            //bit of light recorded is the exception, and it is the same "not knowing
-                            //is not knowing there is none" rule as everywhere else in here: a whole
-                            //voxel of zero is what voxy writes for a chunk section it was handed no
-                            //light layers for, and a fully lit air section above the surface is
-                            //precisely the section the client keeps no layers for, so the air
-                            //sitting on open ground reads back as pitch black. Ingest asks the light
-                            //engine itself about that row and is right about it, and taking this as
-                            //a no would strip the snow it had just put down.
-                            if (storedSnowy && aboveVoxel != 0) {
+                            //A definite no now that blank air has been walked through rather than
+                            //taken at face value, so snow that is there has to come off.
+                            if (storedSnowy) {
                                 //Re-read first for the same reason the write below does: ingest may
                                 //have replaced this voxel, and rewriting it from the stale read
                                 //would carry the old light and biome back in with it.
@@ -866,6 +915,9 @@ public final class SeasonalSnowRefresher {
                         ? data[WorldSection.getIndex(vx, vy + 1, vz)]
                         : (aboveData == null ? OPEN_SKY : aboveData[WorldSection.getIndex(vx, 0, vz)]);
                 int lightAbove = Mapper.getLightId(aboveVoxel);
+                if (aboveVoxel == 0) {
+                    lightAbove = firstLightAbove(data, aboveData, vx, vy + 2, vz);
+                }
 
                 BlockState state = mapper.getBlockStateFromBlockId(base);
                 if (state == null) {
@@ -1006,6 +1058,9 @@ public final class SeasonalSnowRefresher {
                                             : (aboveData == null ? OPEN_SKY
                                                : aboveData[WorldSection.getIndex(x, 0, z)]);
                                     int aboveLight = Mapper.getLightId(aboveVoxel);
+                                    if (aboveVoxel == 0) {
+                                        aboveLight = firstLightAbove(data, aboveData, x, y + 2, z);
+                                    }
                                     if (!SeasonalSnowHooks.lightAllowsSnow(aboveLight,
                                             notSnowyNearGlow, glowLevel)) {
                                         reasons[(aboveLight & 0xF) <= MIN_SKY_LIGHT
