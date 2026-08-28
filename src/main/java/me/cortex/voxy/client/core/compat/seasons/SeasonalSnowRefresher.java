@@ -49,6 +49,42 @@ public final class SeasonalSnowRefresher {
     static final int YES = 1;
     static final int UNKNOWN = 2;
 
+    //Why a voxel got the verdict it did. Only the debug command reads these, but the decision is
+    //made in terms of them so that what the command reports is the decision itself rather than a
+    //second copy of it that can drift.
+    public static final int R_YES = 0;
+    public static final int R_NO_SKY_LIGHT = 1;
+    public static final int R_NO_BLOCK_LIGHT = 2;
+    public static final int R_NO_NOT_A_SNOW_BLOCK = 3;
+    public static final int R_NO_TREE_INTERIOR = 4;
+    public static final int R_NO_BOTH_PASSABLE = 5;
+    public static final int R_NO_BIOME_HAS_NO_SNOW = 6;
+    //Everything from here up is an unknown, see verdictOf
+    public static final int R_UNKNOWN_ABOVE_UNRESOLVABLE = 7;
+    public static final int R_UNKNOWN_BIOME_UNRESOLVABLE = 8;
+    public static final int R_UNKNOWN_NO_WEATHER_DATA = 9;
+    public static final int REASON_COUNT = 10;
+
+    public static final String[] REASON_NAMES = {
+            "snow",
+            "no: too dark to be open sky",
+            "no: too close to a glowing block",
+            "no: not a block EclipticSeasons snows",
+            "no: inside a tree, and snowy trees are off",
+            "no: block and the one above are both passable",
+            "no: this biome has no snow right now",
+            "unknown: the block above is not in this world",
+            "unknown: the biome is not in this world",
+            "unknown: EclipticSeasons has no weather for this biome",
+    };
+
+    static int verdictOf(int reason) {
+        if (reason == R_YES) {
+            return YES;
+        }
+        return reason >= R_UNKNOWN_ABOVE_UNRESOLVABLE ? UNKNOWN : NO;
+    }
+
     /**
      * The cheapest part of the snow decision, and the one that rejects almost everything: anything
      * not open to the sky. Split out so the caller can run it before resolving a block state, a
@@ -154,6 +190,15 @@ public final class SeasonalSnowRefresher {
         return pendingDirty.size();
     }
 
+    //A finished walk says so in chat rather than making you poll status for it. Set on the walk's
+    //own thread and taken on the client tick.
+    private static final java.util.concurrent.atomic.AtomicReference<String> finished =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    public static String takeFinishedMessage() {
+        return finished.getAndSet(null);
+    }
+
     private static void run(Level level, WorldEngine engine, long startedAt) {
         var changed = new java.util.concurrent.atomic.AtomicLong();
         var visited = new java.util.concurrent.atomic.AtomicLong();
@@ -236,6 +281,7 @@ public final class SeasonalSnowRefresher {
                 }
                 if (cancelled || !engine.isLive()) {
                     status = "cancelled after " + changed.get() + " voxels, " + elapsed(startedAt);
+                    finished.set("Seasonal snow refresh " + status);
                     return;
                 }
             }
@@ -243,8 +289,10 @@ public final class SeasonalSnowRefresher {
                     + " sections in " + elapsed(startedAt)
                     + (pendingDirty.isEmpty() ? "" : ", " + pendingDirty.size() + " rebuilds still landing");
             Logger.info("Seasonal snow refresh " + status);
+            finished.set("Seasonal snow refresh " + status);
         } catch (Throwable t) {
             status = "failed: " + t;
+            finished.set("Seasonal snow refresh " + status);
             Logger.error("Seasonal snow refresh failed", t);
         }
     }
@@ -331,6 +379,206 @@ public final class SeasonalSnowRefresher {
             }
         }
         return changed;
+    }
+
+    /**
+     * Reports, for one block column position, what every lod level in the store currently holds and
+     * what the snow decision makes of it. Written for the debug command: guessing at why a patch of
+     * distant ground is bare has been wrong often enough that reading the actual inputs is cheaper.
+     */
+    public static void probe(Level level, WorldEngine engine, BlockPos target, java.util.List<String> out) {
+        Mapper mapper = engine.getMapper();
+        int stateCount = mapper.getBlockStateCount();
+        boolean notSnowyNearGlow = SeasonalSnowHooks.cfgNotSnowyNearGlow();
+        int glowLevel = SeasonalSnowHooks.cfgGlowLevel();
+        boolean snowyTree = SeasonalSnowHooks.cfgSnowyTree();
+        Holder<Biome>[] cache = new Holder[Math.max(mapper.getBiomeEntries().length, 1)];
+        boolean[] tried = new boolean[cache.length];
+
+        for (int lvl = 0; lvl <= WorldEngine.MAX_LOD_LAYER; lvl++) {
+            int sx = target.getX() >> (5 + lvl);
+            int sy = target.getY() >> (5 + lvl);
+            int sz = target.getZ() >> (5 + lvl);
+            int vx = (target.getX() >> lvl) & 31;
+            int vy = (target.getY() >> lvl) & 31;
+            int vz = (target.getZ() >> lvl) & 31;
+
+            WorldSection section = engine.acquireIfExists(WorldEngine.getWorldSectionId(lvl, sx, sy, sz));
+            if (section == null) {
+                out.add("lod " + lvl + ": nothing stored here");
+                continue;
+            }
+            WorldSection above = null;
+            try {
+                long[] data = section._unsafeGetRawDataArray();
+                if (data == null) {
+                    out.add("lod " + lvl + ": section is empty");
+                    continue;
+                }
+                long voxel = data[WorldSection.getIndex(vx, vy, vz)];
+                int stored = Mapper.getBlockId(voxel);
+                int base = stored >= stateCount ? SeasonalSnowIds.MAX_BLOCK_ID - stored : stored;
+                boolean marked = stored != base;
+
+                long aboveVoxel;
+                if (vy < 31) {
+                    aboveVoxel = data[WorldSection.getIndex(vx, vy + 1, vz)];
+                } else {
+                    above = engine.acquireIfExists(WorldEngine.getWorldSectionId(lvl, sx, sy + 1, sz));
+                    long[] aboveData = above == null ? null : above._unsafeGetRawDataArray();
+                    if (aboveData == null) {
+                        out.add("lod " + lvl + ": " + describeBlock(mapper, base, stateCount, marked)
+                                + ", nothing stored above it so it is never touched");
+                        continue;
+                    }
+                    aboveVoxel = aboveData[WorldSection.getIndex(vx, 0, vz)];
+                }
+
+                int lightAbove = Mapper.getLightId(aboveVoxel);
+                int biomeId = Mapper.getBiomeId(voxel);
+                String biomeName = biomeId >= 0 && biomeId < mapper.getBiomeEntries().length
+                        && mapper.getBiomeEntries()[biomeId] != null
+                        ? mapper.getBiomeEntries()[biomeId].biome : ("#" + biomeId);
+
+                if (base <= 0 || base >= stateCount) {
+                    out.add("lod " + lvl + ": air or an unreadable id (" + stored + ")");
+                    continue;
+                }
+                BlockState state = mapper.getBlockStateFromBlockId(base);
+                if (state == null) {
+                    out.add("lod " + lvl + ": id " + base + " is not a block in this world");
+                    continue;
+                }
+
+                Holder<Biome> biome = biome(level, mapper, biomeId, cache, tried);
+                BlockPos pos = new BlockPos(
+                        ((sx << 5) + vx) << lvl, ((sy << 5) + vy) << lvl, ((sz << 5) + vz) << lvl);
+                int reason = SeasonalSnowHooks.explain(level, mapper, state, aboveVoxel, biome, pos,
+                        stateCount, notSnowyNearGlow, glowLevel, snowyTree);
+
+                out.add("lod " + lvl + ": " + describeBlock(mapper, base, stateCount, marked)
+                        + " in " + biomeName
+                        + ", sky " + (lightAbove & 0xF) + " block " + ((lightAbove >> 4) & 0xF)
+                        + " above -> " + REASON_NAMES[reason]);
+            } finally {
+                if (above != null) {
+                    above.release();
+                }
+                section.release();
+            }
+        }
+    }
+
+    private static String describeBlock(Mapper mapper, int base, int stateCount, boolean marked) {
+        BlockState state = base > 0 && base < stateCount ? mapper.getBlockStateFromBlockId(base) : null;
+        String name = state == null ? ("id " + base)
+                : state.getBlock().builtInRegistryHolder().key().location().toString();
+        return (marked ? "snowy " : "bare ") + name;
+    }
+
+    /**
+     * Counts the reason every voxel gets its verdict, over the sections around a position. Answers
+     * the question a single probe cannot: whether the decision is saying no to a whole region, and
+     * on what grounds.
+     */
+    public static void sample(Level level, WorldEngine engine, BlockPos centre, int radius,
+                              java.util.List<String> out) {
+        Mapper mapper = engine.getMapper();
+        int stateCount = mapper.getBlockStateCount();
+        boolean notSnowyNearGlow = SeasonalSnowHooks.cfgNotSnowyNearGlow();
+        int glowLevel = SeasonalSnowHooks.cfgGlowLevel();
+        boolean snowyTree = SeasonalSnowHooks.cfgSnowyTree();
+        Holder<Biome>[] cache = new Holder[Math.max(mapper.getBiomeEntries().length, 1)];
+        boolean[] tried = new boolean[cache.length];
+
+        for (int lvl = 0; lvl <= WorldEngine.MAX_LOD_LAYER; lvl++) {
+            long[] reasons = new long[REASON_COUNT];
+            long snowNow = 0;
+            long sections = 0;
+            int cx = centre.getX() >> (5 + lvl);
+            int cy = centre.getY() >> (5 + lvl);
+            int cz = centre.getZ() >> (5 + lvl);
+            for (int sx = cx - radius; sx <= cx + radius; sx++) {
+                for (int sz = cz - radius; sz <= cz + radius; sz++) {
+                    for (int sy = cy - 1; sy <= cy + 1; sy++) {
+                        WorldSection section = engine.acquireIfExists(WorldEngine.getWorldSectionId(lvl, sx, sy, sz));
+                        if (section == null) {
+                            continue;
+                        }
+                        WorldSection above = engine.acquireIfExists(
+                                WorldEngine.getWorldSectionId(lvl, sx, sy + 1, sz));
+                        try {
+                            long[] data = section._unsafeGetRawDataArray();
+                            long[] aboveData = above == null ? null : above._unsafeGetRawDataArray();
+                            if (data == null) {
+                                continue;
+                            }
+                            sections++;
+                            for (int y = 0; y < 32; y++) {
+                                for (int z = 0; z < 32; z++) {
+                                    for (int x = 0; x < 32; x++) {
+                                        long voxel = data[WorldSection.getIndex(x, y, z)];
+                                        int stored = Mapper.getBlockId(voxel);
+                                        int base = stored >= stateCount
+                                                ? SeasonalSnowIds.MAX_BLOCK_ID - stored : stored;
+                                        if (base <= 0 || base >= stateCount) {
+                                            continue;
+                                        }
+                                        if (stored != base) {
+                                            snowNow++;
+                                        }
+                                        long aboveVoxel;
+                                        if (y < 31) {
+                                            aboveVoxel = data[WorldSection.getIndex(x, y + 1, z)];
+                                        } else if (aboveData != null) {
+                                            aboveVoxel = aboveData[WorldSection.getIndex(x, 0, z)];
+                                        } else {
+                                            continue;
+                                        }
+                                        if (!lightAllowsSnow(aboveVoxel, notSnowyNearGlow, glowLevel)) {
+                                            //Counted without resolving anything, same as the walk does
+                                            reasons[(Mapper.getLightId(aboveVoxel) & 0xF) <= MIN_SKY_LIGHT
+                                                    ? R_NO_SKY_LIGHT : R_NO_BLOCK_LIGHT]++;
+                                            continue;
+                                        }
+                                        BlockState state = mapper.getBlockStateFromBlockId(base);
+                                        if (state == null) {
+                                            continue;
+                                        }
+                                        Holder<Biome> biome = biome(level, mapper,
+                                                Mapper.getBiomeId(voxel), cache, tried);
+                                        BlockPos pos = new BlockPos(((sx << 5) + x) << lvl,
+                                                ((sy << 5) + y) << lvl, ((sz << 5) + z) << lvl);
+                                        reasons[SeasonalSnowHooks.explain(level, mapper, state, aboveVoxel,
+                                                biome, pos, stateCount, notSnowyNearGlow, glowLevel,
+                                                snowyTree)]++;
+                                    }
+                                }
+                            }
+                        } finally {
+                            if (above != null) {
+                                above.release();
+                            }
+                            section.release();
+                        }
+                    }
+                }
+            }
+            if (sections == 0) {
+                out.add("lod " + lvl + ": nothing stored nearby");
+                continue;
+            }
+            //Sky light rejects the whole underground, so reporting it would drown out everything else
+            StringBuilder sb = new StringBuilder("lod " + lvl + ": " + sections + " sections, "
+                    + snowNow + " snowy now");
+            for (int r = 0; r < REASON_COUNT; r++) {
+                if (r == R_NO_SKY_LIGHT || reasons[r] == 0) {
+                    continue;
+                }
+                sb.append(", ").append(reasons[r]).append(' ').append(REASON_NAMES[r]);
+            }
+            out.add(sb.toString());
+        }
     }
 
     private static Holder<Biome> biome(Level level, Mapper mapper, int biomeId,

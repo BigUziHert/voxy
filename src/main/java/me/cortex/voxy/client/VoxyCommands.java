@@ -1,6 +1,7 @@
 package me.cortex.voxy.client;
 
 import com.mojang.brigadier.arguments.BoolArgumentType;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
@@ -76,7 +77,18 @@ public class VoxyCommands {
                 .then(ClientCommandManager.literal("status")
                         .executes(VoxyCommands::seasonalSnowStatus))
                 .then(ClientCommandManager.literal("colours")
-                        .executes(VoxyCommands::reloadSeasonalColours));
+                        .executes(VoxyCommands::reloadSeasonalColours))
+                .then(ClientCommandManager.literal("debug")
+                        .executes(VoxyCommands::seasonalSnowDebug))
+                .then(ClientCommandManager.literal("probe")
+                        .executes(ctx -> seasonalSnowProbe(ctx, null))
+                        .then(ClientCommandManager.argument("x", IntegerArgumentType.integer())
+                                .then(ClientCommandManager.argument("y", IntegerArgumentType.integer())
+                                        .then(ClientCommandManager.argument("z", IntegerArgumentType.integer())
+                                                .executes(ctx -> seasonalSnowProbe(ctx, new net.minecraft.core.BlockPos(
+                                                        IntegerArgumentType.getInteger(ctx, "x"),
+                                                        IntegerArgumentType.getInteger(ctx, "y"),
+                                                        IntegerArgumentType.getInteger(ctx, "z"))))))));
 
         return ClientCommandManager.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(ClientCommandManager.literal("reload")
@@ -115,6 +127,62 @@ public class VoxyCommands {
         me.cortex.voxy.client.core.compat.seasons.SeasonalSnowRefresher.cancel();
         ctx.getSource().sendFeedback(Component.literal("Cancelling the seasonal snow refresh"));
         return 0;
+    }
+
+    /**
+     * Dumps what the seasonal snow decision is actually working from. Written because three separate
+     * bugs in this feature all looked identical from the outside ("the snow is wrong"), and each one
+     * was found by reading the inputs rather than by reasoning about the code.
+     */
+    private static int seasonalSnowDebug(CommandContext<FabricClientCommandSource> ctx) {
+        var level = Minecraft.getInstance().level;
+        var out = new java.util.ArrayList<String>();
+        me.cortex.voxy.client.core.compat.seasons.SeasonalSnow.report(level, out);
+
+        var player = Minecraft.getInstance().player;
+        if (level != null && player != null) {
+            var engine = WorldIdentifier.ofEngineNullable(level);
+            if (engine != null) {
+                out.add("what the stored lods around you decide (sky light rejections omitted):");
+                try {
+                    me.cortex.voxy.client.core.compat.seasons.SeasonalSnowRefresher.sample(
+                            level, engine, player.blockPosition(), 1, out);
+                } catch (Throwable t) {
+                    out.add("  sampling failed: " + t);
+                }
+            }
+        }
+        send(ctx, out);
+        return 0;
+    }
+
+    private static int seasonalSnowProbe(CommandContext<FabricClientCommandSource> ctx, net.minecraft.core.BlockPos at) {
+        var level = Minecraft.getInstance().level;
+        var player = Minecraft.getInstance().player;
+        if (level == null || player == null) {
+            ctx.getSource().sendError(Component.literal("Not in a world"));
+            return 1;
+        }
+        net.minecraft.core.BlockPos pos = at;
+        if (pos == null) {
+            //Whatever you are looking at, or the ground under you when that is nothing
+            var hit = Minecraft.getInstance().hitResult;
+            pos = hit instanceof net.minecraft.world.phys.BlockHitResult block
+                    ? block.getBlockPos()
+                    : player.blockPosition().below();
+        }
+        var out = new java.util.ArrayList<String>();
+        out.add("seasonal snow at " + pos.getX() + " " + pos.getY() + " " + pos.getZ() + ":");
+        me.cortex.voxy.client.core.compat.seasons.SeasonalSnow.probe(level, pos, out);
+        send(ctx, out);
+        return 0;
+    }
+
+    private static void send(CommandContext<FabricClientCommandSource> ctx, java.util.List<String> lines) {
+        for (String line : lines) {
+            ctx.getSource().sendFeedback(Component.literal(line));
+            Logger.info(line);
+        }
     }
 
     private static int seasonalSnowStatus(CommandContext<FabricClientCommandSource> ctx) {

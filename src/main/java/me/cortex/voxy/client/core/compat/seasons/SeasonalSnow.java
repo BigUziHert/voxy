@@ -77,6 +77,7 @@ public final class SeasonalSnow {
         //Always, even with the feature off: a run that was cancelled or a world that changed can
         //still leave rebuilds queued, and they have to drain rather than pile up
         SeasonalSnowRefresher.drainDirty();
+        announceFinished();
 
         if (level == null) {
             lastSeason = null;
@@ -156,6 +157,67 @@ public final class SeasonalSnow {
             Logger.info("Refreshing seasonal snow over stored lods, " + why);
         }
         return blocked;
+    }
+
+    /** Puts a finished walk in chat, so nobody has to poll status to find out it ended. */
+    private static void announceFinished() {
+        String message = SeasonalSnowRefresher.takeFinishedMessage();
+        if (message == null) {
+            return;
+        }
+        var mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.gui != null) {
+            mc.gui.getChat().addMessage(net.minecraft.network.chat.Component.literal(message));
+        }
+    }
+
+    public static boolean isBroken() {
+        return broken;
+    }
+
+    /** Everything the debug command reports about the state of the feature. */
+    public static void report(net.minecraft.world.level.Level level, java.util.List<String> out) {
+        out.add("EclipticSeasons installed: " + MOD_PRESENT
+                + ", seasonal snow on lods: " + VoxyConfig.CONFIG.seasonalSnowLod
+                + ", auto refresh: " + VoxyConfig.CONFIG.seasonalSnowAutoRefresh
+                + ", colour reload: " + VoxyConfig.CONFIG.seasonalColourReload);
+        out.add("working: " + enabled() + (broken ? " (turned itself off after an error, see the log)" : ""));
+        out.add("refresh: " + (SeasonalSnowRefresher.isRunning() ? "running, " : "")
+                + SeasonalSnowRefresher.describe()
+                + ", " + SeasonalSnowRefresher.pendingRebuilds() + " rebuilds queued");
+        if (!MOD_PRESENT || level == null) {
+            return;
+        }
+        var engine = me.cortex.voxy.commonImpl.WorldIdentifier.ofEngineNullable(level);
+        if (engine == null) {
+            out.add("no voxy world for this level");
+            return;
+        }
+        try {
+            SeasonalSnowHooks.describeState(level, engine.getMapper(), out);
+        } catch (Throwable t) {
+            out.add("could not read EclipticSeasons: " + t);
+        }
+    }
+
+    /** Everything the debug command reports about one position, lod by lod. */
+    public static void probe(net.minecraft.world.level.Level level, net.minecraft.core.BlockPos pos,
+                             java.util.List<String> out) {
+        if (!MOD_PRESENT) {
+            out.add("EclipticSeasons is not installed");
+            return;
+        }
+        var engine = me.cortex.voxy.commonImpl.WorldIdentifier.ofEngineNullable(level);
+        if (engine == null) {
+            out.add("no voxy world for this level");
+            return;
+        }
+        try {
+            SeasonalSnowHooks.describeVanilla(level, pos, out);
+            SeasonalSnowRefresher.probe(level, engine, pos, out);
+        } catch (Throwable t) {
+            out.add("probe failed: " + t);
+        }
     }
 
     private static void disable(String doing, Throwable t) {

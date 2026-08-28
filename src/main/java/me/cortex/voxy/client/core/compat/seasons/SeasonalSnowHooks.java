@@ -190,12 +190,20 @@ final class SeasonalSnowHooks {
     static int decide(Level level, Mapper mapper, BlockState state, long aboveVoxel,
                       Holder<Biome> biome, BlockPos pos, int stateCount,
                       boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
+        return SeasonalSnowRefresher.verdictOf(explain(level, mapper, state, aboveVoxel, biome, pos,
+                stateCount, notSnowyNearGlow, glowLevel, snowyTree));
+    }
+
+    /** The decision itself, as a SeasonalSnowRefresher R_ reason. See decide for the verdict. */
+    static int explain(Level level, Mapper mapper, BlockState state, long aboveVoxel,
+                       Holder<Biome> biome, BlockPos pos, int stateCount,
+                       boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
         int light = Mapper.getLightId(aboveVoxel);
         if ((light & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
-            return SeasonalSnowRefresher.NO;//Not open enough to the sky
+            return SeasonalSnowRefresher.R_NO_SKY_LIGHT;//Not open enough to the sky
         }
         if (notSnowyNearGlow && ((light >> 4) & 0xF) >= glowLevel) {
-            return SeasonalSnowRefresher.NO;
+            return SeasonalSnowRefresher.R_NO_BLOCK_LIGHT;
         }
 
         int aboveStored = Mapper.getBlockId(aboveVoxel);
@@ -203,43 +211,43 @@ final class SeasonalSnowHooks {
                 ? me.cortex.voxy.common.compat.SeasonalSnowIds.MAX_BLOCK_ID - aboveStored
                 : aboveStored;
         if (aboveBase < 0 || aboveBase >= stateCount) {
-            return SeasonalSnowRefresher.UNKNOWN;
+            return SeasonalSnowRefresher.R_UNKNOWN_ABOVE_UNRESOLVABLE;
         }
         BlockState aboveState = mapper.getBlockStateFromBlockId(aboveBase);
         if (aboveState == null) {
-            return SeasonalSnowRefresher.UNKNOWN;
+            return SeasonalSnowRefresher.R_UNKNOWN_ABOVE_UNRESOLVABLE;
         }
 
         int flag = MapChecker.getDefaultBlockTypeFlag(state);
         if (flag <= MapChecker.FLAG_NONE) {
-            return SeasonalSnowRefresher.NO;//Never a block EclipticSeasons snows
+            return SeasonalSnowRefresher.R_NO_NOT_A_SNOW_BLOCK;
         }
         if (MapChecker.leaveLike(flag)) {
             boolean specialLeaves = aboveState.is(state.getBlock())
                     && (Heightmap.Types.MOTION_BLOCKING_NO_LEAVES.isOpaque().test(aboveState)
                         || MapChecker.extraSnowPassable(aboveState));
             if (specialLeaves && !snowyTree) {
-                return SeasonalSnowRefresher.NO;
+                return SeasonalSnowRefresher.R_NO_TREE_INTERIOR;
             }
         } else if (MapChecker.extraSnowPassable(state) && MapChecker.extraSnowPassable(aboveState)) {
-            return SeasonalSnowRefresher.NO;
+            return SeasonalSnowRefresher.R_NO_BOTH_PASSABLE;
         }
 
         //A biome the store remembers but this world cannot resolve is not evidence of no snow
         if (biome == null) {
-            return SeasonalSnowRefresher.UNKNOWN;
+            return SeasonalSnowRefresher.R_UNKNOWN_BIOME_UNRESOLVABLE;
         }
         if (MapChecker.shouldSnowAtBiome(level, biome.value(), state, level.getRandom(),
                 state.getSeed(pos), pos)) {
-            return SeasonalSnowRefresher.YES;
+            return SeasonalSnowRefresher.R_YES;
         }
         //shouldSnowAtBiome is snowDepthAtBiome(biome) > |seed % 100|, and getSnowDepthAtBiome
         //answers 0 both for a biome with no snow and for a biome EclipticSeasons has no weather
         //for at all. Taking the second as a no is what stripped snow off distant biomes the client
         //had never been told about. Only trust a no when the weather is actually known.
         return WeatherManager.getBiomeWeather(level, biome.value()) == null
-                ? SeasonalSnowRefresher.UNKNOWN
-                : SeasonalSnowRefresher.NO;
+                ? SeasonalSnowRefresher.R_UNKNOWN_NO_WEATHER_DATA
+                : SeasonalSnowRefresher.R_NO_BIOME_HAS_NO_SNOW;
     }
 
     //CommonConfig.Snow's fields are declared as ModConfigSpec.BooleanValue and IntValue, NeoForge
@@ -307,5 +315,86 @@ final class SeasonalSnowHooks {
             //Fall back to the solar term alone
         }
         return hash;
+    }
+
+    /** Reflective so a version of EclipticSeasons that renamed it degrades to "?" rather than failing. */
+    private static String snowDepthOf(Level level, Biome biome) {
+        try {
+            Object weather = WeatherManager.getBiomeWeather(level, biome);
+            if (weather == null) {
+                return "no weather data";
+            }
+            return String.valueOf(weather.getClass().getMethod("getSnowDepth").invoke(weather));
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
+    /** What EclipticSeasons itself says about the season, the config, and the biomes in the store. */
+    static void describeState(Level level, Mapper mapper, List<String> out) {
+        out.add("season: " + ClientCon.nowSolarTerm);
+        out.add("config: snowyTree=" + cfgSnowyTree()
+                + ", notSnowyNearGlowingBlock=" + cfgNotSnowyNearGlow()
+                + " at light " + cfgGlowLevel()
+                + ", min sky light " + (SeasonalSnowRefresher.MIN_SKY_LIGHT + 1));
+
+        var entries = mapper.getBiomeEntries();
+        int known = 0;
+        int unknown = 0;
+        int unresolved = 0;
+        var detail = new java.util.ArrayList<String>();
+        for (int i = 0; i < entries.length; i++) {
+            if (entries[i] == null) {
+                continue;
+            }
+            Holder<Biome> holder;
+            try {
+                holder = level.registryAccess().registryOrThrow(Registries.BIOME)
+                        .getHolder(ResourceKey.create(Registries.BIOME,
+                                ResourceLocation.parse(entries[i].biome)))
+                        .orElse(null);
+            } catch (Throwable t) {
+                holder = null;
+            }
+            if (holder == null) {
+                unresolved++;
+                detail.add("  " + entries[i].biome + ": not in this world");
+                continue;
+            }
+            String depth = snowDepthOf(level, holder.value());
+            if (depth.equals("no weather data")) {
+                unknown++;
+            } else {
+                known++;
+            }
+            detail.add("  " + entries[i].biome + ": snow depth " + depth);
+        }
+        out.add("biomes in the store: " + known + " with weather, " + unknown
+                + " with none, " + unresolved + " unresolvable");
+        //Every biome, in full: the point of this command is spotting the one that is different
+        out.addAll(detail);
+    }
+
+    /** What EclipticSeasons would answer for the real block at pos, for comparing against the lod. */
+    static void describeVanilla(Level level, BlockPos pos, List<String> out) {
+        try {
+            BlockState state = level.getBlockState(pos);
+            Holder<Biome> biome = level.getBiome(pos);
+            String name = biome.unwrapKey().map(k -> k.location().toString()).orElse("?");
+            long seed = state.getSeed(pos);
+            out.add("the real block here: " + state.getBlock().builtInRegistryHolder().key().location()
+                    + " in " + name);
+            out.add("  snow depth " + snowDepthOf(level, biome.value())
+                    + " vs this block's roll " + Math.abs(seed % 100)
+                    + ", type flag " + MapChecker.getDefaultBlockTypeFlag(state));
+            out.add("  EclipticSeasons says " + (MapChecker.shouldSnowAtBiome(level, biome.value(),
+                    state, level.getRandom(), seed, pos) ? "snow" : "no snow"));
+            out.add("  api isSnowyBlock: " + EclipticSeasonsApi.getInstance().isSnowyBlock(level, state, pos));
+            out.add("  surface here is y=" + (level.getHeight(Heightmap.Types.MOTION_BLOCKING,
+                    pos.getX(), pos.getZ()) - 1) + ", sky light above "
+                    + level.getBrightness(net.minecraft.world.level.LightLayer.SKY, pos.above()));
+        } catch (Throwable t) {
+            out.add("the real block here: could not be read (" + t + ")");
+        }
     }
 }
