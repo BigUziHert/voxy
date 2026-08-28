@@ -567,11 +567,19 @@ public final class SeasonalSnowRefresher {
 
                         int aboveLight = Mapper.getLightId(aboveVoxel);
                         if (!SeasonalSnowHooks.lightAllowsSnow(aboveLight, notSnowyNearGlow, glowLevel)) {
-                            //A definite no, not an unknown, so snow that is there has to come off.
-                            //Re-read first for the same reason the write below does: ingest may have
-                            //replaced this voxel, and rewriting it from the stale read would carry
-                            //the old light and biome back in with it.
-                            if (storedSnowy) {
+                            //A definite no, so snow that is there has to come off. Air with not one
+                            //bit of light recorded is the exception, and it is the same "not knowing
+                            //is not knowing there is none" rule as everywhere else in here: a whole
+                            //voxel of zero is what voxy writes for a chunk section it was handed no
+                            //light layers for, and a fully lit air section above the surface is
+                            //precisely the section the client keeps no layers for, so the air
+                            //sitting on open ground reads back as pitch black. Ingest asks the light
+                            //engine itself about that row and is right about it, and taking this as
+                            //a no would strip the snow it had just put down.
+                            if (storedSnowy && aboveVoxel != 0) {
+                                //Re-read first for the same reason the write below does: ingest may
+                                //have replaced this voxel, and rewriting it from the stale read
+                                //would carry the old light and biome back in with it.
                                 long dark = data[idx];
                                 if (Mapper.getBlockId(dark) == stored) {
                                     data[idx] = withBlockId(dark, base);

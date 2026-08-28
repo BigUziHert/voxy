@@ -12,13 +12,16 @@ import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldUpdater;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.lighting.LayerLightEventListener;
 import net.minecraft.world.level.lighting.LayerLightSectionStorage;
 import org.jetbrains.annotations.NotNull;
 
@@ -27,27 +30,27 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 public class VoxelIngestService {
     private static final ThreadLocal<VoxelizedSection> SECTION_CACHE = ThreadLocal.withInitial(VoxelizedSection::createEmpty);
     private final Service service;
-    //aboveSection and its two light layers are the section directly on top of this one, when the
-    //enqueuing side could see it. All three are null otherwise, and then the top row of this section
-    //is simply left undecided rather than decided against data nobody has.
+    //aboveSection is the chunk section directly on top of this one, or null when there is none
+    //because this is the top of the column. aboveLight is the light one block above this section's
+    //top row, one packed byte per column, already resolved on the main thread; null only when
+    //nobody could ask the light engine, and then the top row is left undecided.
     private record IngestSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section,
                                  DataLayer blockLight, DataLayer skyLight,
-                                 LevelChunkSection aboveSection, DataLayer aboveBlockLight,
-                                 DataLayer aboveSkyLight){
+                                 LevelChunkSection aboveSection, byte[] aboveLight){
         IngestSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section,
                       DataLayer blockLight, DataLayer skyLight) {
-            this(cx, cy, cz, world, section, blockLight, skyLight, null, null, null);
+            this(cx, cy, cz, world, section, blockLight, skyLight, null, null);
         }
     }
 
     /**
      * A lighting supplier that can also answer for the row above the section, so the top row of a
-     * section can be decided rather than skipped. Only built when the sky light of the section above
-     * is actually known: absent light reads as zero, and zero sky light on the block above a surface
-     * would say "buried" when it means "no data".
+     * section can be decided rather than skipped. The above light is resolved before the task is
+     * queued, because only the main thread may ask the light engine and the copied light layers
+     * cannot answer for a section the client keeps no layer for.
      */
     private record AboveAwareLighting(ILightingSupplier base, LevelChunkSection aboveSection,
-                                      DataLayer aboveBlockLight, DataLayer aboveSkyLight)
+                                      byte[] aboveLight)
             implements ILightingSupplier, IAboveSectionData {
         @Override
         public byte supply(int x, int y, int z) {
@@ -56,9 +59,7 @@ public class VoxelIngestService {
 
         @Override
         public byte lightAbove(int x, int z) {
-            int block = this.aboveBlockLight == null ? 0 : Math.min(15, this.aboveBlockLight.get(x, 0, z));
-            int sky = this.aboveSkyLight == null ? 0 : Math.min(15, this.aboveSkyLight.get(x, 0, z));
-            return (byte) (sky | (block << 4));
+            return this.aboveLight[(z << 4) | x];
         }
 
         @Override
@@ -100,8 +101,12 @@ public class VoxelIngestService {
         ILightingSupplier supplier = (x,y,z) -> (byte) 0;
         var sla = task.skyLight;
         var bla = task.blockLight;
-        boolean sl = sla != null && !sla.isEmpty();
-        boolean bl = bla != null && !bla.isEmpty();
+        //A layer with no backing array is not a layer with nothing to say: it is uniform, and it
+        //carries the value it is uniform at. get() answers correctly for it, and the synthesised
+        //layer that puts real sky light on the air above the ground is exactly that shape, so
+        //skipping empty layers here threw that answer away.
+        boolean sl = sla != null;
+        boolean bl = bla != null;
         if (sl || bl) {
             if (sl && bl) {
                 supplier = (x,y,z)-> {
@@ -123,12 +128,8 @@ public class VoxelIngestService {
                 };
             }
         }
-        //Only when the sky light above is genuinely known. A missing layer reads as zero, and zero
-        //over a surface block would be taken as buried, which is the one answer that must not be
-        //guessed at here.
-        var asl = task.aboveSkyLight;
-        if (task.aboveSection != null && asl != null && !asl.isEmpty()) {
-            return new AboveAwareLighting(supplier, task.aboveSection, task.aboveBlockLight, asl);
+        if (task.aboveLight != null) {
+            return new AboveAwareLighting(supplier, task.aboveSection, task.aboveLight);
         }
         return supplier;
     }
@@ -203,6 +204,24 @@ public class VoxelIngestService {
             slCopies[k] = sl == null ? null : sl.copy();
         }
 
+        //The air that sits directly on top of the ground is the one place the store has to be right
+        //about, and the one place it was wrong: the light engine keeps no layer for a fully lit air
+        //section, so voxy wrote the whole section out as plain zeros and the sky over open ground
+        //came back as pitch black. Anything reading the store later - the seasonal snow pass, the
+        //shading of that top face - then had no way to tell open sky from the inside of a mountain.
+        //Only the sections immediately above something solid are given the real value: the rest of
+        //the sky is nothing but air nobody asks about, and storing all of it would be a lot of empty
+        //sections for no answer.
+        for (int k = 0; k + 1 < sections.length; k++) {
+            if (sections[k] == null || sections[k].hasOnlyAir() || slCopies[k + 1] != null) continue;
+            if (sections[k + 1] == null) continue;
+            int uniform = slp.getLightValue(
+                    SectionPos.of(chunk.getPos(), chunk.getMinSection() + k + 1).origin());
+            if (uniform > 0) {
+                slCopies[k + 1] = new DataLayer(uniform);
+            }
+        }
+
         for (int k = 0; k < sections.length; k++) {
             var section = sections[k];
             int y = chunk.getMinSection() + k;
@@ -213,13 +232,18 @@ public class VoxelIngestService {
             //}
             int a = k + 1;
             boolean hasAbove = a < sections.length;
+            //A section with nothing in it has no top row to decide, so do not pay for the row above it
+            byte[] aboveLight = section.hasOnlyAir() ? null
+                    : aboveLightRow(blp, slp,
+                            hasAbove ? blCopies[a] : null,
+                            hasAbove ? slCopies[a] : null,
+                            chunk.getPos(), y + 1);
             engine.markActive();
             //TODO: fixme, this is technically not safe todo on the chunk load ingest, we need to copy the section data so it cant be modified while being read
             this.ingestQueue.add(new IngestSection(chunk.getPos().x, y, chunk.getPos().z, engine, section,
                     blCopies[k], slCopies[k],
                     hasAbove ? sections[a] : null,
-                    hasAbove ? blCopies[a] : null,
-                    hasAbove ? slCopies[a] : null));
+                    aboveLight));
             try {
                 this.service.execute();
             } catch (Exception e) {
@@ -228,6 +252,39 @@ public class VoxelIngestService {
             }
         }
         return true;
+    }
+
+    /**
+     * The light one block above a section's top row, one packed byte per column, in the same
+     * sky | block &lt;&lt; 4 layout ILightingSupplier uses.
+     *
+     * A copied light layer answers this per column when there is one. A missing layer is the case
+     * that matters and the one that was getting this wrong: a section the light engine keeps no
+     * layer for is uniform, and above the top of the sky light storage that uniform value is 15,
+     * not 0. Reading it as zero said "buried" about the one place the sun definitely reaches, which
+     * is the air sitting directly on top of the ground, and so the top row of every chunk section
+     * was left bare while the fifteen rows under it snowed. One probe describes a uniform section,
+     * and only the thread that owns the chunk may ask the light engine, which is why this is
+     * resolved here rather than on the ingest worker.
+     */
+    private static byte[] aboveLightRow(LayerLightEventListener blp, LayerLightEventListener slp,
+                                        DataLayer bl, DataLayer sl, ChunkPos cp, int aboveSectionY) {
+        int uniformSky = 0;
+        int uniformBlock = 0;
+        if (sl == null || bl == null) {
+            var origin = new BlockPos(cp.getMinBlockX(), aboveSectionY << 4, cp.getMinBlockZ());
+            if (sl == null) uniformSky = slp.getLightValue(origin);
+            if (bl == null) uniformBlock = blp.getLightValue(origin);
+        }
+        var row = new byte[256];
+        for (int z = 0; z < 16; z++) {
+            for (int x = 0; x < 16; x++) {
+                int sky = sl == null ? uniformSky : sl.get(x, 0, z);
+                int block = bl == null ? uniformBlock : bl.get(x, 0, z);
+                row[(z << 4) | x] = (byte) (Math.min(15, sky) | (Math.min(15, block) << 4));
+            }
+        }
+        return row;
     }
 
     public int getTaskCount() {
