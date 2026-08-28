@@ -91,9 +91,10 @@ public final class SeasonalSnowRefresher {
         }
         cancelled = false;
         status = "starting";
-        Thread t = new Thread(() -> run(level, engine), "voxy-seasonal-snow-refresh");
-        //Below the render and ingest threads, a season change is not worth a frame
-        t.setPriority(Thread.MIN_PRIORITY);
+        final long startedAt = System.currentTimeMillis();
+        Thread t = new Thread(() -> run(level, engine, startedAt), "voxy-seasonal-snow-refresh");
+        //The coordinator just hands out work, the scanning threads it starts carry the priority
+        t.setPriority(Thread.NORM_PRIORITY - 2);
         t.setDaemon(true);
         worker = t;
         t.start();
@@ -104,10 +105,15 @@ public final class SeasonalSnowRefresher {
         cancelled = true;
     }
 
-    private static void run(Level level, WorldEngine engine) {
-        long visited = 0;
-        long changed = 0;
-        long touchedSections = 0;
+    //Enough to use the idle cores without competing with render and ingest for all of them
+    private static int workerCount() {
+        return Math.max(1, Math.min(6, Runtime.getRuntime().availableProcessors() / 2));
+    }
+
+    private static void run(Level level, WorldEngine engine, long startedAt) {
+        var changed = new java.util.concurrent.atomic.AtomicLong();
+        var visited = new java.util.concurrent.atomic.AtomicLong();
+        var touched = new java.util.concurrent.atomic.AtomicLong();
         try {
             Mapper mapper = engine.getMapper();
             //Read once: these are per voxel reads otherwise, and they cannot change meaningfully
@@ -115,9 +121,6 @@ public final class SeasonalSnowRefresher {
             boolean notSnowyNearGlow = SeasonalSnowHooks.cfgNotSnowyNearGlow();
             int glowLevel = SeasonalSnowHooks.cfgGlowLevel();
             boolean snowyTree = SeasonalSnowHooks.cfgSnowyTree();
-            //Resolved lazily and reused, a registry lookup per voxel would dominate the walk
-            Holder<Biome>[] biomeCache = new Holder[Math.max(mapper.getBiomeEntries().length, 1)];
-            boolean[] biomeTried = new boolean[biomeCache.length];
 
             //Highest level first. Distant terrain renders from the top levels and there are far
             //fewer of those sections, so what you are actually looking at updates in seconds
@@ -127,47 +130,98 @@ public final class SeasonalSnowRefresher {
                 //underneath it is not something the backend promises to survive
                 LongArrayList positions = new LongArrayList();
                 engine.storage.iteratePositions(lvl, positions::add);
+                if (positions.isEmpty()) {
+                    continue;
+                }
 
-                for (int i = 0; i < positions.size(); i++) {
-                    if (cancelled || !engine.isLive()) {
-                        status = "cancelled after " + changed + " voxels";
-                        return;
-                    }
-                    long pos = positions.getLong(i);
-                    WorldSection section = engine.acquireIfExists(pos);
-                    if (section == null) {
-                        continue;
-                    }
-                    WorldSection above = engine.acquireIfExists(WorldEngine.getWorldSectionId(
-                            lvl, WorldEngine.getX(pos), WorldEngine.getY(pos) + 1, WorldEngine.getZ(pos)));
-                    try {
-                        int n = process(level, mapper, section, above, biomeCache, biomeTried,
-                                notSnowyNearGlow, glowLevel, snowyTree);
-                        if (n > 0) {
-                            engine.markDirty(section);
-                            changed += n;
-                            touchedSections++;
+                //Sections are independent, and the section tracker is built for concurrent access
+                //(striped StampedLocks), which is how ingest already reaches it from its own pool.
+                //Only the dirty notification is serialised, see markDirtySafely.
+                final int level0 = lvl;
+                final var cursor = new java.util.concurrent.atomic.AtomicInteger();
+                final var total = positions.size();
+                int workers = Math.min(workerCount(), total);
+                Thread[] pool = new Thread[workers];
+                for (int w = 0; w < workers; w++) {
+                    pool[w] = new Thread(() -> {
+                        //Per worker, a shared one would need locking on every voxel
+                        Holder<Biome>[] biomeCache = new Holder[Math.max(mapper.getBiomeEntries().length, 1)];
+                        boolean[] biomeTried = new boolean[biomeCache.length];
+                        int i;
+                        while ((i = cursor.getAndIncrement()) < total) {
+                            if (cancelled || !engine.isLive()) {
+                                return;
+                            }
+                            long pos = positions.getLong(i);
+                            WorldSection section = engine.acquireIfExists(pos);
+                            if (section == null) {
+                                continue;
+                            }
+                            WorldSection above = engine.acquireIfExists(WorldEngine.getWorldSectionId(
+                                    level0, WorldEngine.getX(pos), WorldEngine.getY(pos) + 1, WorldEngine.getZ(pos)));
+                            try {
+                                int n = process(level, mapper, section, above, biomeCache, biomeTried,
+                                        notSnowyNearGlow, glowLevel, snowyTree);
+                                if (n > 0) {
+                                    markDirtySafely(engine, section);
+                                    changed.addAndGet(n);
+                                    touched.incrementAndGet();
+                                }
+                            } catch (Throwable t) {
+                                Logger.error("Seasonal snow refresh failed on " + WorldEngine.pprintPos(pos), t);
+                            } finally {
+                                if (above != null) {
+                                    above.release();
+                                }
+                                section.release();
+                            }
+                            long v = visited.incrementAndGet();
+                            if ((v & 0xFF) == 0) {
+                                status = describeProgress(level0, cursor.get(), total, changed.get(), startedAt);
+                            }
                         }
-                    } catch (Throwable t) {
-                        Logger.error("Seasonal snow refresh failed on " + WorldEngine.pprintPos(pos), t);
-                    } finally {
-                        if (above != null) {
-                            above.release();
-                        }
-                        section.release();
-                    }
-                    visited++;
-                    if ((visited & 0xFF) == 0) {
-                        status = "level " + lvl + ", " + visited + " sections, " + changed + " voxels changed";
-                    }
+                    }, "voxy-seasonal-snow-refresh-" + lvl + "-" + w);
+                    //Below render and ingest, but not so low that the OS never schedules it
+                    pool[w].setPriority(Thread.NORM_PRIORITY - 2);
+                    pool[w].setDaemon(true);
+                    pool[w].start();
+                }
+                for (Thread t : pool) {
+                    t.join();
+                }
+                if (cancelled || !engine.isLive()) {
+                    status = "cancelled after " + changed.get() + " voxels, " + elapsed(startedAt);
+                    return;
                 }
             }
-            status = "done: " + changed + " voxels over " + touchedSections + " sections";
+            status = "done: " + changed.get() + " voxels over " + touched.get()
+                    + " sections in " + elapsed(startedAt);
             Logger.info("Seasonal snow refresh " + status);
         } catch (Throwable t) {
             status = "failed: " + t;
             Logger.error("Seasonal snow refresh failed", t);
         }
+    }
+
+    //GeometryCache and the update router make no thread safety promises, and this fires once per
+    //changed section rather than per voxel, so serialising it costs nothing measurable
+    private static final Object DIRTY_LOCK = new Object();
+
+    private static void markDirtySafely(WorldEngine engine, WorldSection section) {
+        synchronized (DIRTY_LOCK) {
+            engine.markDirty(section);
+        }
+    }
+
+    private static String describeProgress(int lvl, int done, int total, long changed, long startedAt) {
+        return "level " + lvl + ", " + Math.min(done, total) + "/" + total + " sections ("
+                + (total == 0 ? 100 : (int) (100L * Math.min(done, total) / total)) + "%), "
+                + changed + " voxels changed, " + elapsed(startedAt);
+    }
+
+    private static String elapsed(long startedAt) {
+        long ms = System.currentTimeMillis() - startedAt;
+        return ms < 1000 ? ms + "ms" : (ms / 1000) + "s";
     }
 
     private static int process(Level level, Mapper mapper, WorldSection section, WorldSection above,
