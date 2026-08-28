@@ -5,7 +5,6 @@ import com.teamtea.eclipticseasons.client.core.ExtraModelManager;
 import com.teamtea.eclipticseasons.client.core.ExtraRendererContext;
 import com.teamtea.eclipticseasons.client.util.ClientCon;
 import com.teamtea.eclipticseasons.common.core.map.MapChecker;
-import com.teamtea.eclipticseasons.config.CommonConfig;
 import me.cortex.voxy.client.core.model.bakery.ReuseVertexConsumer;
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import me.cortex.voxy.common.world.other.Mapper;
@@ -108,13 +107,13 @@ final class SeasonalSnowHooks {
      * Returns SeasonalSnowRefresher NO / YES / UNKNOWN. UNKNOWN means leave the voxel alone.
      */
     static int decide(Level level, Mapper mapper, BlockState state, long aboveVoxel,
-                      Holder<Biome> biome, BlockPos pos, int stateCount) {
+                      Holder<Biome> biome, BlockPos pos, int stateCount,
+                      boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
         int light = Mapper.getLightId(aboveVoxel);
         if ((light & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
             return SeasonalSnowRefresher.NO;//Not open enough to the sky
         }
-        if (CommonConfig.Snow.notSnowyNearGlowingBlock.get()
-                && ((light >> 4) & 0xF) >= CommonConfig.Snow.notSnowyNearGlowingBlockLevel.getAsInt()) {
+        if (notSnowyNearGlow && ((light >> 4) & 0xF) >= glowLevel) {
             return SeasonalSnowRefresher.NO;
         }
 
@@ -138,7 +137,7 @@ final class SeasonalSnowHooks {
             boolean specialLeaves = aboveState.is(state.getBlock())
                     && (Heightmap.Types.MOTION_BLOCKING_NO_LEAVES.isOpaque().test(aboveState)
                         || MapChecker.extraSnowPassable(aboveState));
-            if (specialLeaves && !CommonConfig.Snow.snowyTree.get()) {
+            if (specialLeaves && !snowyTree) {
                 return SeasonalSnowRefresher.NO;
             }
         } else if (MapChecker.extraSnowPassable(state) && MapChecker.extraSnowPassable(aboveState)) {
@@ -151,6 +150,49 @@ final class SeasonalSnowHooks {
         }
         return MapChecker.shouldSnowAtBiome(level, biome.value(), state, level.getRandom(),
                 state.getSeed(pos), pos) ? SeasonalSnowRefresher.YES : SeasonalSnowRefresher.NO;
+    }
+
+    //CommonConfig.Snow's fields are declared as ModConfigSpec.BooleanValue and IntValue, NeoForge
+    //types that are not on a fabric compile classpath, so naming them here does not compile. They do
+    //implement Supplier and IntSupplier, which is reachable reflectively. Read once per pass by the
+    //caller: these cannot meaningfully change inside one, and this is far too slow per voxel.
+    private static final String SNOW_CONFIG = "com.teamtea.eclipticseasons.config.CommonConfig$Snow";
+
+    private static Object snowConfigValue(String field) throws Exception {
+        return Class.forName(SNOW_CONFIG).getField(field).get(null);
+    }
+
+    static boolean cfgNotSnowyNearGlow() {
+        try {
+            if (snowConfigValue("notSnowyNearGlowingBlock") instanceof java.util.function.Supplier<?> s
+                    && s.get() instanceof Boolean b) {
+                return b;
+            }
+        } catch (Throwable ignored) {}
+        return true;//EclipticSeasons' own default
+    }
+
+    static int cfgGlowLevel() {
+        try {
+            Object v = snowConfigValue("notSnowyNearGlowingBlockLevel");
+            if (v instanceof java.util.function.IntSupplier s) {
+                return s.getAsInt();
+            }
+            if (v instanceof java.util.function.Supplier<?> s && s.get() instanceof Number n) {
+                return n.intValue();
+            }
+        } catch (Throwable ignored) {}
+        return 10;//EclipticSeasons' own default
+    }
+
+    static boolean cfgSnowyTree() {
+        try {
+            if (snowConfigValue("snowyTree") instanceof java.util.function.Supplier<?> s
+                    && s.get() instanceof Boolean b) {
+                return b;
+            }
+        } catch (Throwable ignored) {}
+        return true;//EclipticSeasons' own default
     }
 
     /** Identifies the current season, for spotting a change. Never compared for anything else. */

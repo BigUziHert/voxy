@@ -93,6 +93,11 @@ public final class SeasonalSnowRefresher {
         long touchedSections = 0;
         try {
             Mapper mapper = engine.getMapper();
+            //Read once: these are per voxel reads otherwise, and they cannot change meaningfully
+            //inside a single pass
+            boolean notSnowyNearGlow = SeasonalSnowHooks.cfgNotSnowyNearGlow();
+            int glowLevel = SeasonalSnowHooks.cfgGlowLevel();
+            boolean snowyTree = SeasonalSnowHooks.cfgSnowyTree();
             //Resolved lazily and reused, a registry lookup per voxel would dominate the walk
             Holder<Biome>[] biomeCache = new Holder[Math.max(mapper.getBiomeEntries().length, 1)];
             boolean[] biomeTried = new boolean[biomeCache.length];
@@ -116,7 +121,8 @@ public final class SeasonalSnowRefresher {
                     WorldSection above = engine.acquireIfExists(WorldEngine.getWorldSectionId(
                             lvl, WorldEngine.getX(pos), WorldEngine.getY(pos) + 1, WorldEngine.getZ(pos)));
                     try {
-                        int n = process(level, mapper, section, above, biomeCache, biomeTried);
+                        int n = process(level, mapper, section, above, biomeCache, biomeTried,
+                                notSnowyNearGlow, glowLevel, snowyTree);
                         if (n > 0) {
                             engine.markDirty(section);
                             changed += n;
@@ -145,7 +151,8 @@ public final class SeasonalSnowRefresher {
     }
 
     private static int process(Level level, Mapper mapper, WorldSection section, WorldSection above,
-                               Holder<Biome>[] biomeCache, boolean[] biomeTried) {
+                               Holder<Biome>[] biomeCache, boolean[] biomeTried,
+                               boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
         long[] data = section._unsafeGetRawDataArray();
         long[] aboveData = above == null ? null : above._unsafeGetRawDataArray();
         if (data == null) {
@@ -187,7 +194,8 @@ public final class SeasonalSnowRefresher {
                             ((section.y << 5) + y) << lvl,
                             ((section.z << 5) + z) << lvl);
 
-                    int verdict = SeasonalSnowHooks.decide(level, mapper, state, aboveVoxel, biome, pos, stateCount);
+                    int verdict = SeasonalSnowHooks.decide(level, mapper, state, aboveVoxel, biome, pos,
+                            stateCount, notSnowyNearGlow, glowLevel, snowyTree);
                     if (verdict == UNKNOWN) {
                         continue;
                     }
