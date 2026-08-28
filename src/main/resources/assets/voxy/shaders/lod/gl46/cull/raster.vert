@@ -8,6 +8,7 @@
 
 #import <voxy:lod/section.glsl>
 #import <voxy:lod/gl46/bindings.glsl>
+#import <voxy:lod/curvature.glsl>
 #import <voxy:util/depthutils.glsl>
 
 flat out uint id;
@@ -38,7 +39,10 @@ void main() {
     vec3 offset = aabbOffset-EXPANSION;
     offset += vec3(gl_VertexID&1, (gl_VertexID>>2)&1, (gl_VertexID>>1)&1)*(size+2*EXPANSION);
 
-    gl_Position = MVP * vec4(vec3(pos)+offset*(1<<detail),1);
+    //Bend the aabb the same way the geometry inside it gets bent, otherwise the occlusion test
+    // runs against a box that sits hundreds of blocks away from what was actually drawn and
+    // sections get culled while they are still on screen
+    gl_Position = MVP * vec4(applyWorldCurvature(vec3(pos)+offset*(1<<detail)),1);
 
     //Bring closer to camera
     gl_Position.z += (CLOSER_SIGN*0.000001f) * gl_Position.w;

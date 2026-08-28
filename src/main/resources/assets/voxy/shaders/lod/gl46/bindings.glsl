@@ -3,6 +3,14 @@ layout(binding = 0, std140) uniform SceneUniform {
     ivec3 baseSectionPos;
     uint frameId;
     vec3 cameraSubPos;
+    //std140 puts a 4 byte hole here, name it so the matching write in
+    // MDICSectionRenderer#uploadUniformBuffer is obviously deliberate, worldCurveData needs to
+    // start on a 16 byte boundary (byte 96, making the block 112 bytes)
+    float _scenePadding;
+    //x = radius in blocks of the sphere the world is bent around, 0 disables the effect
+    //y = radius in blocks of the flat region around the camera, the bend starts there
+    //zw = unused
+    vec4 worldCurveData;
 };
 
 //TODO: see if making the stride 2*4*4 bytes or something cause you get that 16 byte write

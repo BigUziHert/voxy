@@ -42,6 +42,25 @@ public class VoxyConfig {
 
     public boolean useEnvironmentalFog = true;
 
+    //Divisor of earths radius, so 1 would be true earth curvature and larger values a smaller,
+    // more sharply curved planet. 0 disables the effect and leaves the world flat.
+    public int earthCurveRatio = 0;
+
+    //Below this the world drops by well under a block across voxys whole render distance, so the
+    // effect would be invisible while still paying for itself, snap up to it instead
+    private static final int MIN_EARTH_CURVE_RATIO = 50;
+    private static final float EARTH_RADIUS_IN_BLOCKS = 6371000.0f;
+
+    public static int clampEarthCurveRatio(int ratio) {
+        return (ratio > 0 && ratio < MIN_EARTH_CURVE_RATIO) ? MIN_EARTH_CURVE_RATIO : Math.max(ratio, 0);
+    }
+
+    //Radius in blocks of the sphere the world is bent around, 0 when curvature is disabled
+    public float getWorldCurveRadius() {
+        int ratio = clampEarthCurveRatio(this.earthCurveRatio);
+        return ratio == 0 ? 0.0f : EARTH_RADIUS_IN_BLOCKS / ratio;
+    }
+
     public SSAO.SSAOMode getSSAOMode() {
         if (this.ssaoMode == null) return SSAO.SSAOMode.AUTO;
         try {

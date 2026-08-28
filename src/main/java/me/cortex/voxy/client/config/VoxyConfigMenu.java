@@ -123,7 +123,17 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                                 }
                                             }
                                         }, "voxy:rendering", RENDER_RELOAD)
-                                        .setImpact(OptionImpact.MEDIUM)
+                                        .setImpact(OptionImpact.MEDIUM),
+                                new IntOption(
+                                        "voxy:earth_curve_ratio",
+                                        Component.translatable("voxy.config.general.earthCurveRatio"),
+                                        ()->CFG.earthCurveRatio, v->CFG.earthCurveRatio=VoxyConfig.clampEarthCurveRatio(v),
+                                        new Range(0, 10000, 50))
+                                        //Read fresh out of the config every frame, so no renderer reload
+                                        .setFormatter(v->v==0?
+                                                Component.translatable("voxy.config.general.earthCurveRatio.off"):
+                                                Component.literal(Integer.toString(v)))
+                                        .setImpact(OptionImpact.LOW)
                         ), new Group(
                                 new BoolOption(
                                     "voxy:eviromental_fog",

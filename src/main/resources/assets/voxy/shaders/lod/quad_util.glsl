@@ -1,5 +1,6 @@
 #import <voxy:lod/pos_util.glsl>
 #import <voxy:lod/lighting.glsl>
+#import <voxy:lod/curvature.glsl>
 //Common utility functions for decoding and operating on quads
 
 vec3 swizzelDataAxis(uint axis, vec3 data) {
@@ -153,7 +154,7 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
 vec4 getQuadCornerPos(in QuadData quad, uint cornerId) {
     vec2 cornerMask = vec2((cornerId>>1)&1u, cornerId&1u)*quad.lodScale;
     vec3 point = quad.basePoint + swizzelDataAxis(quad.axis,vec3(quad.quadSizeAddin*cornerMask,0));
-    vec4 pos = MVP * vec4(point, 1.0f);
+    vec4 pos = MVP * vec4(applyWorldCurvature(point), 1.0f);
     pos.xy += taaOffset*pos.w;
     return pos;
 }

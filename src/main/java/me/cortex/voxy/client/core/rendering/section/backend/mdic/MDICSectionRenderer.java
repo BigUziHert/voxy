@@ -3,6 +3,7 @@ package me.cortex.voxy.client.core.rendering.section.backend.mdic;
 
 import me.cortex.voxy.client.RenderStatistics;
 import me.cortex.voxy.client.VoxyClient;
+import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.AbstractRenderPipeline;
 import me.cortex.voxy.client.core.gl.Capabilities;
 import me.cortex.voxy.client.core.gl.GlBuffer;
@@ -164,6 +165,18 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         }
         MemoryUtil.memPutInt(ptr, viewport.frameId&0x7fffffff); ptr += 4;
         viewport.innerTranslation.getToAddress(ptr); ptr += 4*3;
+
+        //std140: cameraSubPos ends at byte 92, a 4 byte pad puts worldCurveData on its required 16
+        //byte boundary at 96. Must stay in lockstep with SceneUniform in gl46/bindings.glsl.
+        //The UploadStream staging region is a recycled ring and is never zeroed, so every one of
+        //these floats has to be written each call or stale data feeds straight into the radius.
+        MemoryUtil.memPutFloat(ptr, 0.0f); ptr += 4;//_scenePadding
+        MemoryUtil.memPutFloat(ptr, VoxyConfig.CONFIG.getWorldCurveRadius()); ptr += 4;//worldCurveData.x
+        //Leave the region vanilla is still drawing chunks in flat so the seam doesnt tear, vanilla
+        //render distance is in chunks and the bend starts a chunk inside its edge
+        MemoryUtil.memPutFloat(ptr, Math.max((Minecraft.getInstance().options.getEffectiveRenderDistance()*16.0f) - 16.0f, 16.0f)); ptr += 4;//worldCurveData.y
+        MemoryUtil.memPutFloat(ptr, 0.0f); ptr += 4;//worldCurveData.z, unused
+        MemoryUtil.memPutFloat(ptr, 0.0f); ptr += 4;//worldCurveData.w, unused
 
         UploadStream.INSTANCE.commit();
     }
