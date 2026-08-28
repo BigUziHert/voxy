@@ -1,6 +1,5 @@
 package me.cortex.voxy.client.core.compat.seasons;
 
-import com.teamtea.eclipticseasons.api.EclipticSeasonsApi;
 import com.teamtea.eclipticseasons.client.core.ExtraModelManager;
 import com.teamtea.eclipticseasons.client.core.ExtraRendererContext;
 import com.teamtea.eclipticseasons.client.util.ClientCon;
@@ -76,6 +75,9 @@ final class SeasonalSnowHooks {
      * map, which is not populated for everything voxy ingests, and a false from it is not evidence
      * of no snow. Trusting it meant a re-ingest wrote bare terrain over ground a refresh had
      * correctly snowed, so flying around slowly stripped the world back.
+     *
+     * The top row is left undecided: nothing here can see the section above it. The refresher
+     * covers that row, since a level 0 world section is 32 voxels tall and this one is 16.
      */
     static void markSection(long[] data, Mapper mapper, VoxelizedSection section) {
         Level level = ClientCon.getUseLevel();
@@ -95,71 +97,71 @@ final class SeasonalSnowHooks {
             BIOME_TRIED.set(tried);
         }
 
-        //Index layout is (y<<8)|(z<<4)|x, so the voxel above is +256 and the top row has none.
-        //Walked a column at a time from the top so that openness to the sky comes out of the walk,
-        //exactly as the refresher decides it. The two have to agree: a re-ingest that disagreed with
-        //a refresh is what used to strip snow off ground you flew over.
-        for (int column = 0; column < 256; column++) {
-            boolean covered = false;
-            for (int y = 15; y >= 0; y--) {
-                int i = (y << 8) | column;
-                long voxel = data[i];
-                int blockId = Mapper.getBlockId(voxel);
-                boolean solid = !Mapper.isAir(voxel);
-                if (covered || y == 15 || blockId <= 0 || blockId >= stateCount) {
-                    //Covered, the top row with nothing above it to judge by, air, or unresolvable
-                    if (solid) {
-                        covered = true;
+        //Index layout is (y<<8)|(z<<4)|x, so the voxel above is +256 and the top row has none
+        for (int i = 0; i < 0xF00; i++) {
+            long voxel = data[i];
+            int blockId = Mapper.getBlockId(voxel);
+            if (blockId <= 0 || blockId >= stateCount) {
+                continue;//Air, or already marked, or not resolvable
+            }
+            //Reject on light before resolving anything: this runs during chunk load, and almost
+            //every voxel in a section is underground
+            if (!lightAllowsSnow(data[i + 256], cfgGlow, cfgGlowLvl)) {
+                continue;
+            }
+
+            BlockState state = mapper.getBlockStateFromBlockId(blockId);
+            if (state == null) {
+                continue;
+            }
+
+            int biomeId = Mapper.getBiomeId(voxel);
+            Holder<Biome> biome = null;
+            if (biomeId >= 0 && biomeId < cache.length) {
+                if (!tried[biomeId]) {
+                    tried[biomeId] = true;
+                    try {
+                        cache[biomeId] = level.registryAccess()
+                                .registryOrThrow(Registries.BIOME)
+                                .getHolder(ResourceKey.create(Registries.BIOME,
+                                        ResourceLocation.parse(mapper.getBiomeEntries()[biomeId].biome)))
+                                .orElse(null);
+                    } catch (Throwable ignored) {
+                        cache[biomeId] = null;
                     }
-                    continue;
                 }
-                if (!SeasonalSnowRefresher.glowAllowsSnow(data[i + 256], cfgGlow, cfgGlowLvl)) {
-                    covered = true;//solid, or it would not have an id
-                    continue;
-                }
-                markVoxel(level, data, i, voxel, blockId, mapper, section, cache, tried, stateCount);
-                covered = true;//A block with an id is solid, so nothing under it is open
+                biome = cache[biomeId];
+            }
+
+            BlockPos pos = new BlockPos(
+                    (section.x << 4) + (i & 0xF),
+                    (section.y << 4) + ((i >> 8) & 0xF),
+                    (section.z << 4) + ((i >> 4) & 0xF));
+
+            int verdict = decide(level, mapper, state, data[i + 256], biome, pos, stateCount,
+                    cfgGlow, cfgGlowLvl, cfgTree);
+            if (verdict == SeasonalSnowRefresher.YES) {
+                data[i] = SeasonalSnowRefresher.withBlockId(voxel,
+                        me.cortex.voxy.common.compat.SeasonalSnowIds.mark(blockId));
             }
         }
     }
 
-    private static void markVoxel(Level level, long[] data, int i, long voxel, int blockId, Mapper mapper,
-                              VoxelizedSection section, Holder<Biome>[] cache, boolean[] tried,
-                              int stateCount) {
-        BlockState state = mapper.getBlockStateFromBlockId(blockId);
-        if (state == null) {
-            return;
+    /**
+     * The cheapest part of the decision and the one that rejects almost everything: not open to the
+     * sky. Split out so a caller can run it before resolving a block state, a biome and a position,
+     * which is otherwise a billion pointless allocations underground.
+     *
+     * Only ever asked of level 0 data, where the light is what ingest read out of the chunk. The
+     * mipped light at higher levels does not mean the same thing and is never consulted, see
+     * SeasonalSnowRefresher.
+     */
+    static boolean lightAllowsSnow(long aboveVoxel, boolean notSnowyNearGlow, int glowLevel) {
+        int light = Mapper.getLightId(aboveVoxel);
+        if ((light & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
+            return false;
         }
-
-        int biomeId = Mapper.getBiomeId(voxel);
-        Holder<Biome> biome = null;
-        if (biomeId >= 0 && biomeId < cache.length) {
-            if (!tried[biomeId]) {
-                tried[biomeId] = true;
-                try {
-                    cache[biomeId] = level.registryAccess()
-                            .registryOrThrow(Registries.BIOME)
-                            .getHolder(ResourceKey.create(Registries.BIOME,
-                                    ResourceLocation.parse(mapper.getBiomeEntries()[biomeId].biome)))
-                            .orElse(null);
-                } catch (Throwable ignored) {
-                    cache[biomeId] = null;
-                }
-            }
-            biome = cache[biomeId];
-        }
-
-        BlockPos pos = new BlockPos(
-                (section.x << 4) + (i & 0xF),
-                (section.y << 4) + ((i >> 8) & 0xF),
-                (section.z << 4) + ((i >> 4) & 0xF));
-
-        int verdict = decide(level, mapper, state, data[i + 256], true, biome, pos, stateCount,
-                cfgGlow, cfgGlowLvl, cfgTree);
-        if (verdict == SeasonalSnowRefresher.YES) {
-            data[i] = SeasonalSnowRefresher.withBlockId(voxel,
-                    me.cortex.voxy.common.compat.SeasonalSnowIds.mark(blockId));
-        }
+        return !(notSnowyNearGlow && ((light >> 4) & 0xF) >= glowLevel);
     }
 
     static void renderSnowOverlay(BlockState state, RenderType layer, ReuseVertexConsumer translucentVC, ReuseVertexConsumer opaqueVC) {
@@ -198,27 +200,28 @@ final class SeasonalSnowHooks {
     }
 
     /**
-     * Re-decides snow for a voxel already in the store, from stored data alone. Used by the
-     * refresher, where the chunk is long gone and EclipticSeasons' own map has nothing to say
-     * about somewhere the player has never been.
+     * Re-decides snow for one level 0 voxel from stored data alone. Used by the refresher, where the
+     * chunk is long gone and EclipticSeasons' own map has nothing to say about somewhere the player
+     * has never been.
      *
      * Returns SeasonalSnowRefresher NO / YES / UNKNOWN. UNKNOWN means leave the voxel alone.
      */
-    static int decide(Level level, Mapper mapper, BlockState state, long aboveVoxel, boolean openToSky,
+    static int decide(Level level, Mapper mapper, BlockState state, long aboveVoxel,
                       Holder<Biome> biome, BlockPos pos, int stateCount,
                       boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
-        return SeasonalSnowRefresher.verdictOf(explain(level, mapper, state, aboveVoxel, openToSky,
-                biome, pos, stateCount, notSnowyNearGlow, glowLevel, snowyTree));
+        return SeasonalSnowRefresher.verdictOf(explain(level, mapper, state, aboveVoxel, biome, pos,
+                stateCount, notSnowyNearGlow, glowLevel, snowyTree));
     }
 
     /** The decision itself, as a SeasonalSnowRefresher R_ reason. See decide for the verdict. */
-    static int explain(Level level, Mapper mapper, BlockState state, long aboveVoxel, boolean openToSky,
+    static int explain(Level level, Mapper mapper, BlockState state, long aboveVoxel,
                        Holder<Biome> biome, BlockPos pos, int stateCount,
                        boolean notSnowyNearGlow, int glowLevel, boolean snowyTree) {
-        if (!openToSky) {
-            return SeasonalSnowRefresher.R_NO_COVERED;
+        int light = Mapper.getLightId(aboveVoxel);
+        if ((light & 0xF) <= SeasonalSnowRefresher.MIN_SKY_LIGHT) {
+            return SeasonalSnowRefresher.R_NO_SKY_LIGHT;
         }
-        if (!SeasonalSnowRefresher.glowAllowsSnow(aboveVoxel, notSnowyNearGlow, glowLevel)) {
+        if (notSnowyNearGlow && ((light >> 4) & 0xF) >= glowLevel) {
             return SeasonalSnowRefresher.R_NO_BLOCK_LIGHT;
         }
 
@@ -310,30 +313,32 @@ final class SeasonalSnowHooks {
     }
 
     /**
-     * Identifies the current snow situation, for spotting a change. Never compared for anything else.
+     * True when EclipticSeasons has raised its snow-change flag since the last look, clearing it.
      *
-     * The solar term alone is not enough. Snow depth per biome falls gradually as it melts, and the
-     * decision reads that depth, so a single pass on the term change jumps straight to the end state
-     * while the world near you is still melting. Quantising the depths puts a handful of steps in
-     * that curve instead, so the distance follows the melt down rather than beating it to the bottom.
+     * This is the signal the mod raises itself when the snow situation moves, rather than anything
+     * derived. ClientCon.agent is a no-op implementation until the client side of EclipticSeasons
+     * installs the real one, so a false here is not proof that nothing changed, which is why the
+     * caller also watches the solar term.
      */
-    static Object snowStateToken(Level level) {
-        int hash = ClientCon.nowSolarTerm == null ? 0 : ClientCon.nowSolarTerm.hashCode();
+    static boolean consumeSnowChange() {
         try {
-            var biomes = WeatherManager.getBiomeList(level);
-            if (biomes != null) {
-                for (var weather : biomes) {
-                    //Coarse: a step per ten percent of depth, so a full melt is a handful of passes
-                    hash = hash * 31 + (weather == null ? 0 : weather.getSnowDepth() / 10);
-                }
+            var agent = ClientCon.getAgent();
+            if (agent != null && agent.isSnowChange()) {
+                agent.setSnowChange(false);
+                return true;
             }
         } catch (Throwable ignored) {
-            //Fall back to the solar term alone
+            //An EclipticSeasons without the flag: the solar term watch still covers the common case
         }
-        return hash;
+        return false;
     }
 
-    /** The biome's snow depth, or -1 when EclipticSeasons has no weather for it. See snowDepthOf. */
+    /** Identifies the current solar term, for spotting a change. Never compared for anything else. */
+    static int solarTermToken() {
+        return ClientCon.nowSolarTerm == null ? 0 : ClientCon.nowSolarTerm.hashCode();
+    }
+
+    /** The biome's snow depth, or -1 when EclipticSeasons has no weather for it. */
     static int snowDepthValue(Level level, Biome biome) {
         try {
             Object weather = WeatherManager.getBiomeWeather(level, biome);
@@ -347,17 +352,9 @@ final class SeasonalSnowHooks {
         }
     }
 
-    /** Reflective so a version of EclipticSeasons that renamed it degrades to "?" rather than failing. */
     private static String snowDepthOf(Level level, Biome biome) {
-        try {
-            Object weather = WeatherManager.getBiomeWeather(level, biome);
-            if (weather == null) {
-                return "no weather data";
-            }
-            return String.valueOf(weather.getClass().getMethod("getSnowDepth").invoke(weather));
-        } catch (Throwable t) {
-            return "?";
-        }
+        int depth = snowDepthValue(level, biome);
+        return depth < 0 ? "no weather data" : String.valueOf(depth);
     }
 
     /** What EclipticSeasons itself says about the season, the config, and the biomes in the store. */
@@ -366,8 +363,7 @@ final class SeasonalSnowHooks {
         out.add("config: snowyTree=" + cfgSnowyTree()
                 + ", notSnowyNearGlowingBlock=" + cfgNotSnowyNearGlow()
                 + " at light " + cfgGlowLevel()
-                + ". Openness to the sky is read from what is stored above a voxel, not from its"
-                + " sky light, which is unreliable over empty sky");
+                + ", min sky light " + (SeasonalSnowRefresher.MIN_SKY_LIGHT + 1));
 
         var entries = mapper.getBiomeEntries();
         int known = 0;
@@ -402,14 +398,13 @@ final class SeasonalSnowHooks {
         }
         out.add("biomes in the store: " + known + " with weather, " + unknown
                 + " with none, " + unresolved + " unresolvable");
-        //Every biome, in full: the point of this command is spotting the one that is different
         out.addAll(detail);
     }
 
     /** What EclipticSeasons would answer for the real block at pos, for comparing against the lod. */
     static void describeVanilla(Level level, BlockPos pos, List<String> out) {
         try {
-            //Same as the lod side: the height asked for is a hint. Drop to the surface when it is air
+            //The height asked for is a hint. Drop to the surface when it is air
             if (level.getBlockState(pos).isAir()) {
                 int surface = level.getHeight(Heightmap.Types.MOTION_BLOCKING, pos.getX(), pos.getZ()) - 1;
                 if (surface > level.getMinBuildHeight()) {
@@ -431,7 +426,6 @@ final class SeasonalSnowHooks {
                     + ", type flag " + MapChecker.getDefaultBlockTypeFlag(state));
             out.add("  EclipticSeasons says " + (MapChecker.shouldSnowAtBiome(level, biome.value(),
                     state, level.getRandom(), seed, pos) ? "snow" : "no snow"));
-            out.add("  api isSnowyBlock: " + EclipticSeasonsApi.getInstance().isSnowyBlock(level, state, pos));
             out.add("  surface here is y=" + (level.getHeight(Heightmap.Types.MOTION_BLOCKING,
                     pos.getX(), pos.getZ()) - 1) + ", sky light above "
                     + level.getBrightness(net.minecraft.world.level.LightLayer.SKY, pos.above()));

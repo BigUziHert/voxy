@@ -68,10 +68,13 @@ public final class SeasonalSnow {
         }
     }
 
-    //Last season seen by the tick poll. EclipticSeasons 0.14.5 has no client event we can
-    //subscribe to from a fabric mod, so the current solar term is watched instead.
-    private static volatile Object lastSeason = null;
+    //Last solar term seen by the tick poll, as a fallback for the snow-change flag below
+    private static volatile int lastTerm = Integer.MIN_VALUE;
     private static int tickCounter = 0;
+
+    //A season change is broadcast as a run of updates while it is snowing, and each pass walks the
+    //whole store, so passes are spaced out rather than queued up behind each other
+    private static final long AUTO_COOLDOWN_MILLIS = 60_000;
 
     public static void onClientTick(net.minecraft.world.level.Level level) {
         //Always, even with the feature off: a run that was cancelled or a world that changed can
@@ -81,7 +84,7 @@ public final class SeasonalSnow {
         announceProgress();
 
         if (level == null) {
-            lastSeason = null;
+            lastTerm = Integer.MIN_VALUE;
             return;
         }
         if (!enabled()) {
@@ -90,28 +93,43 @@ public final class SeasonalSnow {
         if (!VoxyConfig.CONFIG.seasonalSnowAutoRefresh && !VoxyConfig.CONFIG.seasonalColourReload) {
             return;//Nothing to do on a season change
         }
-        //Once a second is plenty: this walks the biome weather list
+        //Once a second is plenty
         if ((tickCounter++ % 20) != 0) {
             return;
         }
-        Object token;
+        //Checked before anything is read, so a change that lands inside the window is deferred
+        //rather than consumed and dropped: the flag stays raised and the term stays unrecorded,
+        //and the first tick past the window acts on it.
+        if (SeasonalSnowRefresher.isRunning()) {
+            return;
+        }
+        if (System.currentTimeMillis() - SeasonalSnowRefresher.lastPassEndMillis < AUTO_COOLDOWN_MILLIS) {
+            return;
+        }
+
+        boolean changed;
+        int term;
         try {
-            token = SeasonalSnowHooks.snowStateToken(level);
+            //EclipticSeasons raises this itself when the snow situation moves. Its client agent is a
+            //no-op implementation until the mod installs the real one though, so a false is not proof
+            //that nothing changed: the solar term is watched as well, and either one is enough.
+            changed = SeasonalSnowHooks.consumeSnowChange();
+            term = SeasonalSnowHooks.solarTermToken();
         } catch (Throwable t) {
             disable("reading the current season", t);
             return;
         }
-        if (token == null) {
+        if (lastTerm == Integer.MIN_VALUE) {
+            lastTerm = term;//First sight of a world is not a change
             return;
         }
-        if (lastSeason == null) {
-            lastSeason = token;//First sight of a world is not a change
+        if (term != lastTerm) {
+            lastTerm = term;
+            changed = true;
+        }
+        if (!changed) {
             return;
         }
-        if (token.equals(lastSeason)) {
-            return;
-        }
-        lastSeason = token;
         if (VoxyConfig.CONFIG.seasonalColourReload) {
             reloadColours();
         }
