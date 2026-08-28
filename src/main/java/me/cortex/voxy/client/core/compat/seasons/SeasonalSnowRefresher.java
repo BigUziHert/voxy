@@ -90,6 +90,8 @@ public final class SeasonalSnowRefresher {
             return "no live voxy world";
         }
         cancelled = false;
+        pendingDirty.clear();
+        dirtyEngine = engine;
         status = "starting";
         final long startedAt = System.currentTimeMillis();
         Thread t = new Thread(() -> run(level, engine, startedAt), "voxy-seasonal-snow-refresh");
@@ -105,9 +107,51 @@ public final class SeasonalSnowRefresher {
         cancelled = true;
     }
 
-    //Enough to use the idle cores without competing with render and ingest for all of them
+    //A whole store is only tens of seconds of work, so this is deliberately restrained. Taking
+    //half the cores made the game stutter for no gain that anyone was waiting on.
     private static int workerCount() {
-        return Math.max(1, Math.min(6, Runtime.getRuntime().availableProcessors() / 2));
+        return Math.max(1, Math.min(3, Runtime.getRuntime().availableProcessors() / 4));
+    }
+
+    //Sections whose geometry needs rebuilding, handed to the renderer a few per tick.
+    //Marking all of them as they are found buries the render pipeline in thousands of rebuild
+    //requests inside a few seconds, which is what the stutter was: the scan itself is cheap.
+    private static final java.util.concurrent.ConcurrentLinkedQueue<Long> pendingDirty =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private static volatile WorldEngine dirtyEngine;
+
+    //About 640 sections a second, so a full store spreads over roughly fifteen seconds instead of
+    //arriving all at once. Slower than the scan, which is fine, the terrain just fills in.
+    private static final int DIRTY_PER_TICK = 32;
+
+    /** Called from the client tick. Hands a bounded number of rebuilds to the renderer. */
+    public static void drainDirty() {
+        var engine = dirtyEngine;
+        if (engine == null || !engine.isLive()) {
+            pendingDirty.clear();
+            return;
+        }
+        for (int i = 0; i < DIRTY_PER_TICK; i++) {
+            Long pos = pendingDirty.poll();
+            if (pos == null) {
+                return;
+            }
+            var section = engine.acquireIfExists(pos);
+            if (section == null) {
+                continue;
+            }
+            try {
+                engine.markDirty(section);
+            } catch (Throwable t) {
+                Logger.error("Failed to mark a refreshed section dirty", t);
+            } finally {
+                section.release();
+            }
+        }
+    }
+
+    public static int pendingRebuilds() {
+        return pendingDirty.size();
     }
 
     private static void run(Level level, WorldEngine engine, long startedAt) {
@@ -163,7 +207,8 @@ public final class SeasonalSnowRefresher {
                                 int n = process(level, mapper, section, above, biomeCache, biomeTried,
                                         notSnowyNearGlow, glowLevel, snowyTree);
                                 if (n > 0) {
-                                    markDirtySafely(engine, section);
+                                    //Queued rather than marked now, see drainDirty
+                                    pendingDirty.add(pos);
                                     changed.addAndGet(n);
                                     touched.incrementAndGet();
                                 }
@@ -195,21 +240,12 @@ public final class SeasonalSnowRefresher {
                 }
             }
             status = "done: " + changed.get() + " voxels over " + touched.get()
-                    + " sections in " + elapsed(startedAt);
+                    + " sections in " + elapsed(startedAt)
+                    + (pendingDirty.isEmpty() ? "" : ", " + pendingDirty.size() + " rebuilds still landing");
             Logger.info("Seasonal snow refresh " + status);
         } catch (Throwable t) {
             status = "failed: " + t;
             Logger.error("Seasonal snow refresh failed", t);
-        }
-    }
-
-    //GeometryCache and the update router make no thread safety promises, and this fires once per
-    //changed section rather than per voxel, so serialising it costs nothing measurable
-    private static final Object DIRTY_LOCK = new Object();
-
-    private static void markDirtySafely(WorldEngine engine, WorldSection section) {
-        synchronized (DIRTY_LOCK) {
-            engine.markDirty(section);
         }
     }
 

@@ -73,6 +73,10 @@ public final class SeasonalSnow {
     private static volatile Object lastSeason = null;
 
     public static void onClientTick(net.minecraft.world.level.Level level) {
+        //Always, even with the feature off: a run that was cancelled or a world that changed can
+        //still leave rebuilds queued, and they have to drain rather than pile up
+        SeasonalSnowRefresher.drainDirty();
+
         if (level == null) {
             lastSeason = null;
             return;
