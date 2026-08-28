@@ -178,7 +178,13 @@ public final class SeasonalSnowRefresher {
     //arriving all at once. Slower than the scan, which is fine, the terrain just fills in.
     private static final int DIRTY_PER_TICK = 32;
 
-    /** Called from the client tick. Hands a bounded number of rebuilds to the renderer. */
+    /**
+     * Called from the client tick. Hands a bounded number of rebuilds to the renderer.
+     *
+     * Only the rebuild, never the save: the walk marks its own sections dirty as it edits them, so a
+     * position that has since been evicted is nothing to worry about here. Its data went to disk and
+     * comes back correct when it is next loaded.
+     */
     public static void drainDirty() {
         var engine = dirtyEngine;
         if (engine == null || !engine.isLive()) {
@@ -270,7 +276,13 @@ public final class SeasonalSnowRefresher {
                                 int n = process(level, mapper, section, above, biomeCache, biomeTried,
                                         notSnowyNearGlow, glowLevel, snowyTree);
                                 if (n > 0) {
-                                    //Queued rather than marked now, see drainDirty
+                                    //Flagged for saving here and now, while this thread still holds
+                                    //the section. Only the rebuild notification is queued, and that
+                                    //can be minutes behind on a big store. A section the walk has
+                                    //edited but nothing has marked dirty yet is dropped on eviction
+                                    //rather than written, so the edit is simply lost, and the walk
+                                    //itself is what applies the eviction pressure that loses it.
+                                    section.markDirty();
                                     pendingDirty.add(pos);
                                     changed.addAndGet(n);
                                     touched.incrementAndGet();

@@ -143,7 +143,7 @@ public class VoxyCommands {
         if (level != null && player != null) {
             var engine = WorldIdentifier.ofEngineNullable(level);
             if (engine != null) {
-                out.add("what the stored lods around you decide (sky light rejections omitted):");
+                out.add("what the stored lods around you decide (buried voxels omitted):");
                 try {
                     me.cortex.voxy.client.core.compat.seasons.SeasonalSnowRefresher.sample(
                             level, engine, player.blockPosition(), 1, out);
