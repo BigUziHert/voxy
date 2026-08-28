@@ -74,7 +74,9 @@ public class VoxyCommands {
                 .then(ClientCommandManager.literal("cancel")
                         .executes(VoxyCommands::cancelSeasonalSnow))
                 .then(ClientCommandManager.literal("status")
-                        .executes(VoxyCommands::seasonalSnowStatus));
+                        .executes(VoxyCommands::seasonalSnowStatus))
+                .then(ClientCommandManager.literal("colours")
+                        .executes(VoxyCommands::reloadSeasonalColours));
 
         return ClientCommandManager.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(ClientCommandManager.literal("reload")
@@ -95,9 +97,17 @@ public class VoxyCommands {
             ctx.getSource().sendError(Component.literal("Could not start: " + blocked));
             return 1;
         }
+        me.cortex.voxy.client.core.compat.seasons.SeasonalSnow.reloadColours();
         ctx.getSource().sendFeedback(Component.literal(
-                "Refreshing seasonal snow over stored LODs, this runs in the background. "
-                        + "/voxy seasonalsnow status to watch it"));
+                "Refreshing seasonal snow over stored LODs and rebuilding their colours. "
+                        + "The snow walk runs in the background, /voxy seasonalsnow status to watch it"));
+        return 0;
+    }
+
+    private static int reloadSeasonalColours(CommandContext<FabricClientCommandSource> ctx) {
+        me.cortex.voxy.client.core.compat.seasons.SeasonalSnow.reloadColours();
+        ctx.getSource().sendFeedback(Component.literal(
+                "Rebuilding LODs so their grass and leaf colours match the current season"));
         return 0;
     }
 

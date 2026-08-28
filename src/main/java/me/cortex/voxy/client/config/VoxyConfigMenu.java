@@ -146,6 +146,12 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         Component.translatable("voxy.config.general.seasonalSnowAutoRefresh"),
                                         ()->CFG.seasonalSnowAutoRefresh, v->CFG.seasonalSnowAutoRefresh=v)
                                         .setEnabler("voxy:seasonal_snow_lod")
+                                        .setImpact(OptionImpact.LOW),
+                                new BoolOption(
+                                        "voxy:seasonal_colour_reload",
+                                        Component.translatable("voxy.config.general.seasonalColourReload"),
+                                        ()->CFG.seasonalColourReload, v->CFG.seasonalColourReload=v)
+                                        .setEnabler("voxy:seasonal_snow_lod")
                                         .setImpact(OptionImpact.LOW)
                         ), new Group(
                                 new BoolOption(

@@ -50,6 +50,10 @@ public class VoxyConfig {
     //lod store, so it is opt in. /voxy seasonalsnow refresh runs the same pass by hand.
     public boolean seasonalSnowAutoRefresh = false;
 
+    //Rebuild lod models when the season changes so their grass and leaf tints are recaptured.
+    //Cheap next to the snow walk and it fixes an obvious wrong look, so it is on by default.
+    public boolean seasonalColourReload = true;
+
     //Divisor of earths radius, so 1 would be true earth curvature and larger values a smaller,
     // more sharply curved planet. 0 disables the effect and leaves the world flat.
     public int earthCurveRatio = 0;

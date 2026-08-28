@@ -1,6 +1,8 @@
 package me.cortex.voxy.client.core.compat.seasons;
 
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
+import net.minecraft.client.Minecraft;
 import me.cortex.voxy.client.core.model.bakery.ReuseVertexConsumer;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.compat.SeasonalSnowIds;
@@ -76,8 +78,11 @@ public final class SeasonalSnow {
             lastSeason = null;
             return;
         }
-        if (!enabled() || !VoxyConfig.CONFIG.seasonalSnowAutoRefresh) {
+        if (!enabled()) {
             return;
+        }
+        if (!VoxyConfig.CONFIG.seasonalSnowAutoRefresh && !VoxyConfig.CONFIG.seasonalColourReload) {
+            return;//Nothing to do on a season change
         }
         Object token;
         try {
@@ -97,7 +102,44 @@ public final class SeasonalSnow {
             return;
         }
         lastSeason = token;
-        refresh(level, "the season changed to " + token);
+        if (VoxyConfig.CONFIG.seasonalColourReload) {
+            reloadColours();
+        }
+        if (VoxyConfig.CONFIG.seasonalSnowAutoRefresh) {
+            refresh(level, "the season changed to " + token);
+        }
+    }
+
+    /**
+     * Rebuilds voxy's lod models so their tint is recaptured for the current season.
+     *
+     * Snow lives in the voxel data, which the refresher rewrites, but colour does not. EclipticSeasons
+     * recolours foliage by mixing into BlockColors and BiomeColors, and voxy reads its tints through
+     * exactly that path in ModelFactory. It only reads them once though, when it builds the per model
+     * and biome colour table it uploads to the gpu, so the colours are correct for whichever season
+     * was current when they were captured and frozen from then on. Rebuilding is what recaptures them.
+     *
+     * Blunter than it needs to be: only the colour table has gone stale, but there is no entry point
+     * to recapture just that, so the renderer is rebuilt. It costs a hitch while geometry comes back,
+     * and it happens once per solar term.
+     */
+    public static void reloadColours() {
+        if (!MOD_PRESENT) {
+            return;
+        }
+        //Touching the renderer off the render thread is not safe
+        Minecraft.getInstance().execute(() -> {
+            try {
+                var renderer = Minecraft.getInstance().levelRenderer;
+                if (renderer instanceof IGetVoxyRenderSystem voxy) {
+                    voxy.voxy$shutdownRenderer();
+                    voxy.voxy$createRenderer();
+                    Logger.info("Rebuilt voxy lods so their colours match the current season");
+                }
+            } catch (Throwable t) {
+                Logger.error("Failed to rebuild lod colours for the season", t);
+            }
+        });
     }
 
     /** Returns null when a refresh started, or a reason it did not. */
