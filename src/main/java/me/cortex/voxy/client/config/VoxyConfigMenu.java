@@ -133,6 +133,13 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         .setFormatter(v->v==0?
                                                 Component.translatable("voxy.config.general.earthCurveRatio.off"):
                                                 Component.literal(Integer.toString(v)))
+                                        .setImpact(OptionImpact.LOW),
+                                new BoolOption(
+                                        "voxy:seasonal_snow_lod",
+                                        Component.translatable("voxy.config.general.seasonalSnowLod"),
+                                        ()->CFG.seasonalSnowLod, v->CFG.seasonalSnowLod=v)
+                                        //Applied when a section is ingested, so already built lods
+                                        //keep whatever season they were captured in
                                         .setImpact(OptionImpact.LOW)
                         ), new Group(
                                 new BoolOption(

@@ -95,7 +95,7 @@ public class SoftwareModelTextureBakery {
         this.rasterizer.setSamplerTexture(pixels, width, height);
     }
 
-    private void bakeBlockModel(BlockState state, RenderType layer) {
+    private void bakeBlockModel(BlockState state, RenderType layer, boolean snowy) {
         if (state.getRenderShape() == RenderShape.INVISIBLE) {
             return;// Dont bake if invisible
         }
@@ -111,6 +111,12 @@ public class SoftwareModelTextureBakery {
                 (layer == RenderType.translucent() ? this.translucentVC : this.opaqueVC)
                         .quad(quad, state.is(BlockTags.LEAVES), layer);
             }
+        }
+
+        //Seasonal snow rides on top of the block that was just baked, into the same texture
+        if (snowy) {
+            me.cortex.voxy.client.core.compat.seasons.SeasonalSnow
+                    .renderSnowOverlay(state, layer, this.translucentVC, this.opaqueVC);
         }
     }
 
@@ -217,6 +223,10 @@ public class SoftwareModelTextureBakery {
     // (0,0),(1,0),(2,0),(0,1),(1,1),(2,1)
 
     public int renderToOutput(BlockState state, long outputBuffer) {
+        return this.renderToOutput(state, outputBuffer, false);
+    }
+
+    public int renderToOutput(BlockState state, long outputBuffer, boolean snowy) {
         MemoryUtil.memSet(outputBuffer, 0, 16 * 16 * 8 * 6);
 
         boolean isBlock = true;
@@ -248,7 +258,7 @@ public class SoftwareModelTextureBakery {
         if (isBlock) {
             this.opaqueVC.reset();
             this.translucentVC.reset();
-            this.bakeBlockModel(state, blockRenderLayer);
+            this.bakeBlockModel(state, blockRenderLayer, snowy);
             isAnyShaded |= this.opaqueVC.anyShaded | this.translucentVC.anyShaded;
             isAnyDarkend |= this.opaqueVC.anyDarkendTex | this.translucentVC.anyDarkendTex;
             anyTranslucent |= !this.translucentVC.isEmpty();

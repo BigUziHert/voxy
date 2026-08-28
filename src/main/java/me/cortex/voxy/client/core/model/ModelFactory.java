@@ -225,7 +225,8 @@ public class ModelFactory {
         if (bake == null) return false;
         ColourDepthTextureData[] textureData = new ColourDepthTextureData[6];
 
-        int flags = this.bakery2.renderToOutput(bake.state, this.bakeScratchBuffer);
+        int flags = this.bakery2.renderToOutput(bake.state, this.bakeScratchBuffer,
+                me.cortex.voxy.common.compat.SeasonalSnowIds.isMarked(this.mapper, bake.blockId));
 
 
         {//Create texture data

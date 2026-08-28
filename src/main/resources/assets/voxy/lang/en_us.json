@@ -29,6 +29,9 @@
   "voxy.config.general.earthCurveRatio.tooltip": "Bends distant voxy terrain down over a horizon, as if the world were a sphere. The value divides earths radius, so higher values mean a smaller, more sharply curved planet. Only affects terrain beyond the vanilla render distance",
   "voxy.config.general.earthCurveRatio.off": "Off",
 
+  "voxy.config.general.seasonalSnowLod": "Seasonal snow on LODs",
+  "voxy.config.general.seasonalSnowLod.tooltip": "Snows distant terrain in step with EclipticSeasons, so LODs match the nearby vanilla chunks instead of staying summer green. Requires EclipticSeasons. Snow is baked in when a section is ingested, so existing LODs keep the season they were captured in",
+
   "voxy.config.general.environmental_fog": "Enable environmental fog",
   "voxy.config.general.environmental_fog.tooltip": "Enables or disables voxy rendering environmental fog",
 

@@ -117,6 +117,11 @@ dependencies {
     modCompileOnly("maven.modrinth:modmenu:11.0.3")
     modRuntimeOnlyMsk("maven.modrinth:modmenu:11.0.3")
 
+    // EclipticSeasons, for seasonal snow on lods. Plain compileOnly, not modCompileOnly: it is a
+    // NeoForge jar reached through Sinytra Connector at runtime and Loom must not try to remap it.
+    // This project compiles against official Mojang mappings, same as NeoForge, so the types line up.
+    compileOnly("maven.modrinth:ecliptic-seasons:0.14.5") { transitive = false }
+
     modCompileOnly("maven.modrinth:iris:1.8.8+1.21.1-fabric")
     // modRuntimeOnlyMsk("maven.modrinth:iris:1.8.8+1.21.1-fabric")
     // iris needs these for some reason

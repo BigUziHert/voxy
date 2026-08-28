@@ -38,6 +38,7 @@ import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import me.cortex.voxy.common.compat.SeasonalSnowIds;
 
 
 //There are independent mappings for biome and block states, these get combined in the shader and allow for more
@@ -244,7 +245,9 @@ public class Mapper {
     }
 
     public BlockState getBlockStateFromBlockId(int blockId) {
-        return this.blockId2stateEntry.get(blockId).state;
+        //A seasonal snow variant carries its base id reflected into the top of the id space and
+        //resolves to the same state, the snow only shows up in the baked model
+        return this.blockId2stateEntry.get(SeasonalSnowIds.unmark(this, blockId)).state;
     }
 
     public int getIdForBlockState(BlockState state) {
@@ -263,7 +266,7 @@ public class Mapper {
     }
 
     public int getBlockStateOpacity(int blockId) {
-        return this.blockId2stateEntry.get(blockId).opacity;
+        return this.blockId2stateEntry.get(SeasonalSnowIds.unmark(this, blockId)).opacity;
     }
 
     public int getIdForBiome(Holder<Biome> biome) {
