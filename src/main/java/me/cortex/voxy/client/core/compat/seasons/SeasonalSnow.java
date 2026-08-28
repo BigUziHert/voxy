@@ -78,6 +78,7 @@ public final class SeasonalSnow {
         //still leave rebuilds queued, and they have to drain rather than pile up
         SeasonalSnowRefresher.drainDirty();
         announceFinished();
+        announceProgress();
 
         if (level == null) {
             lastSeason = null;
@@ -168,6 +169,26 @@ public final class SeasonalSnow {
         var mc = net.minecraft.client.Minecraft.getInstance();
         if (mc.gui != null) {
             mc.gui.getChat().addMessage(net.minecraft.network.chat.Component.literal(message));
+        }
+    }
+
+    //A walk that is running says so every few seconds. Whether a refresh actually gets anywhere is
+    //the question that has been hardest to answer from the outside, and making it answer itself is
+    //cheaper than asking for a status every time.
+    private static int progressTicks = 0;
+
+    private static void announceProgress() {
+        if (!SeasonalSnowRefresher.isRunning()) {
+            progressTicks = 0;
+            return;
+        }
+        if ((progressTicks++ % 100) != 0) {
+            return;
+        }
+        var mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.gui != null) {
+            mc.gui.getChat().addMessage(net.minecraft.network.chat.Component.literal(
+                    "Seasonal snow refresh: " + SeasonalSnowRefresher.describe()));
         }
     }
 
