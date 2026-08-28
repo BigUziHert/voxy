@@ -59,11 +59,17 @@ public final class SeasonalSnowRefresher {
     public static final int R_NO_TREE_INTERIOR = 4;
     public static final int R_NO_BOTH_PASSABLE = 5;
     public static final int R_NO_BIOME_HAS_NO_SNOW = 6;
+    //Split out of the one above by the reporting code only, never returned by explain: telling them
+    //apart costs a snow depth lookup, and the answer is the same either way to everything but a
+    //person reading it. A biome at depth 68 snows 68 percent of positions and leaves the rest bare
+    //by design, which is a very different thing from a biome with no snow in it at all.
+    public static final int R_NO_BIOME_DRY = 7;
+    public static final int R_NO_LOST_THE_ROLL = 8;
     //Everything from here up is an unknown, see verdictOf
-    public static final int R_UNKNOWN_ABOVE_UNRESOLVABLE = 7;
-    public static final int R_UNKNOWN_BIOME_UNRESOLVABLE = 8;
-    public static final int R_UNKNOWN_NO_WEATHER_DATA = 9;
-    public static final int REASON_COUNT = 10;
+    public static final int R_UNKNOWN_ABOVE_UNRESOLVABLE = 9;
+    public static final int R_UNKNOWN_BIOME_UNRESOLVABLE = 10;
+    public static final int R_UNKNOWN_NO_WEATHER_DATA = 11;
+    public static final int REASON_COUNT = 12;
 
     public static final String[] REASON_NAMES = {
             "snow",
@@ -73,6 +79,8 @@ public final class SeasonalSnowRefresher {
             "no: inside a tree, and snowy trees are off",
             "no: block and the one above are both passable",
             "no: this biome has no snow right now",
+            "no: this biome has no snow at all right now",
+            "no: this spot lost the dice roll in a partly snowy biome",
             "unknown: the block above is not in this world",
             "unknown: the biome is not in this world",
             "unknown: EclipticSeasons has no weather for this biome",
@@ -464,11 +472,20 @@ public final class SeasonalSnowRefresher {
                         ((sx << 5) + vx) << lvl, ((sy << 5) + vy) << lvl, ((sz << 5) + vz) << lvl);
                 int reason = SeasonalSnowHooks.explain(level, mapper, state, aboveVoxel, biome, pos,
                         stateCount, notSnowyNearGlow, glowLevel, snowyTree);
+                if (reason == R_NO_BIOME_HAS_NO_SNOW) {
+                    reason = SeasonalSnowHooks.snowDepthValue(level, biome.value()) <= 0
+                            ? R_NO_BIOME_DRY : R_NO_LOST_THE_ROLL;
+                }
 
+                //The roll is what makes a partly snowy biome patchy, and at these levels one voxel
+                //stands for many blocks, so it is worth seeing per level rather than once
+                String roll = biome == null ? ""
+                        : ", depth " + SeasonalSnowHooks.snowDepthValue(level, biome.value())
+                          + " vs roll " + Math.abs(state.getSeed(pos) % 100);
                 out.add(at + describeBlock(mapper, base, stateCount, marked)
                         + " in " + biomeName
                         + ", sky " + (lightAbove & 0xF) + " block " + ((lightAbove >> 4) & 0xF)
-                        + " above -> " + REASON_NAMES[reason]);
+                        + " above" + roll + " -> " + REASON_NAMES[reason]);
             } finally {
                 if (above != null) {
                     above.release();
@@ -541,6 +558,8 @@ public final class SeasonalSnowRefresher {
         boolean snowyTree = SeasonalSnowHooks.cfgSnowyTree();
         Holder<Biome>[] cache = new Holder[Math.max(mapper.getBiomeEntries().length, 1)];
         boolean[] tried = new boolean[cache.length];
+        int[] depthCache = new int[cache.length];
+        java.util.Arrays.fill(depthCache, Integer.MIN_VALUE);
 
         for (int lvl = 0; lvl <= WorldEngine.MAX_LOD_LAYER; lvl++) {
             long[] reasons = new long[REASON_COUNT];
@@ -600,9 +619,14 @@ public final class SeasonalSnowRefresher {
                                                 Mapper.getBiomeId(voxel), cache, tried);
                                         BlockPos pos = new BlockPos(((sx << 5) + x) << lvl,
                                                 ((sy << 5) + y) << lvl, ((sz << 5) + z) << lvl);
-                                        reasons[SeasonalSnowHooks.explain(level, mapper, state, aboveVoxel,
-                                                biome, pos, stateCount, notSnowyNearGlow, glowLevel,
-                                                snowyTree)]++;
+                                        int reason = SeasonalSnowHooks.explain(level, mapper, state,
+                                                aboveVoxel, biome, pos, stateCount, notSnowyNearGlow,
+                                                glowLevel, snowyTree);
+                                        if (reason == R_NO_BIOME_HAS_NO_SNOW) {
+                                            reason = depthOf(level, biome, Mapper.getBiomeId(voxel),
+                                                    depthCache) <= 0 ? R_NO_BIOME_DRY : R_NO_LOST_THE_ROLL;
+                                        }
+                                        reasons[reason]++;
                                     }
                                 }
                             }
@@ -630,6 +654,16 @@ public final class SeasonalSnowRefresher {
             }
             out.add(sb.toString());
         }
+    }
+
+    private static int depthOf(Level level, Holder<Biome> biome, int biomeId, int[] cache) {
+        if (biome == null || biomeId < 0 || biomeId >= cache.length) {
+            return -1;
+        }
+        if (cache[biomeId] == Integer.MIN_VALUE) {
+            cache[biomeId] = SeasonalSnowHooks.snowDepthValue(level, biome.value());
+        }
+        return cache[biomeId];
     }
 
     private static Holder<Biome> biome(Level level, Mapper mapper, int biomeId,

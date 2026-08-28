@@ -317,6 +317,20 @@ final class SeasonalSnowHooks {
         return hash;
     }
 
+    /** The biome's snow depth, or -1 when EclipticSeasons has no weather for it. See snowDepthOf. */
+    static int snowDepthValue(Level level, Biome biome) {
+        try {
+            Object weather = WeatherManager.getBiomeWeather(level, biome);
+            if (weather == null) {
+                return -1;
+            }
+            Object depth = weather.getClass().getMethod("getSnowDepth").invoke(weather);
+            return depth instanceof Number n ? n.intValue() : -1;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
     /** Reflective so a version of EclipticSeasons that renamed it degrades to "?" rather than failing. */
     private static String snowDepthOf(Level level, Biome biome) {
         try {
