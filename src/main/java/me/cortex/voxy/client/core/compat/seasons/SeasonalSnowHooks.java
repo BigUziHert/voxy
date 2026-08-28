@@ -101,6 +101,12 @@ final class SeasonalSnowHooks {
             if (blockId <= 0 || blockId >= stateCount) {
                 continue;//Air, or already marked, or not resolvable
             }
+            //Reject on light before resolving anything: this runs during chunk load, and almost
+            //every voxel in a section is underground
+            if (!SeasonalSnowRefresher.lightAllowsSnow(data[i + 256], cfgGlow, cfgGlowLvl)) {
+                continue;
+            }
+
             BlockState state = mapper.getBlockStateFromBlockId(blockId);
             if (state == null) {
                 continue;
@@ -132,8 +138,8 @@ final class SeasonalSnowHooks {
             int verdict = decide(level, mapper, state, data[i + 256], biome, pos, stateCount,
                     cfgGlow, cfgGlowLvl, cfgTree);
             if (verdict == SeasonalSnowRefresher.YES) {
-                data[i] = (voxel & ~(((1L << 20) - 1) << 27))
-                        | ((me.cortex.voxy.common.compat.SeasonalSnowIds.mark(blockId) & ((1L << 20) - 1)) << 27);
+                data[i] = SeasonalSnowRefresher.withBlockId(voxel,
+                        me.cortex.voxy.common.compat.SeasonalSnowIds.mark(blockId));
             }
         }
     }

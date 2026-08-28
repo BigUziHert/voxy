@@ -49,6 +49,23 @@ public final class SeasonalSnowRefresher {
     static final int YES = 1;
     static final int UNKNOWN = 2;
 
+    /**
+     * The cheapest part of the snow decision, and the one that rejects almost everything: anything
+     * not open to the sky. Split out so the caller can run it before resolving a block state, a
+     * biome and a position, which is otherwise a billion pointless allocations underground.
+     */
+    static boolean lightAllowsSnow(long aboveVoxel, boolean notSnowyNearGlow, int glowLevel) {
+        int light = Mapper.getLightId(aboveVoxel);
+        if ((light & 0xF) <= MIN_SKY_LIGHT) {
+            return false;
+        }
+        return !(notSnowyNearGlow && ((light >> 4) & 0xF) >= glowLevel);
+    }
+
+    static long withBlockId(long voxel, int blockId) {
+        return (voxel & ~BLOCK_ID_MASK) | ((blockId & ((1L << 20) - 1)) << 27);
+    }
+
     private static Thread worker;
     private static volatile boolean cancelled;
     private static volatile String status = "idle";
@@ -102,7 +119,10 @@ public final class SeasonalSnowRefresher {
             Holder<Biome>[] biomeCache = new Holder[Math.max(mapper.getBiomeEntries().length, 1)];
             boolean[] biomeTried = new boolean[biomeCache.length];
 
-            for (int lvl = 0; lvl <= WorldEngine.MAX_LOD_LAYER; lvl++) {
+            //Highest level first. Distant terrain renders from the top levels and there are far
+            //fewer of those sections, so what you are actually looking at updates in seconds
+            //instead of after the whole of level 0 has been ground through.
+            for (int lvl = WorldEngine.MAX_LOD_LAYER; lvl >= 0; lvl--) {
                 //Collect first: the storage iterator holds a cursor open and acquiring sections
                 //underneath it is not something the backend promises to survive
                 LongArrayList positions = new LongArrayList();
@@ -183,6 +203,15 @@ public final class SeasonalSnowRefresher {
                         continue;//Nothing above to judge by, leave it alone
                     }
 
+                    if (!lightAllowsSnow(aboveVoxel, notSnowyNearGlow, glowLevel)) {
+                        //A definite no, not an unknown, so snow that is there has to come off
+                        if (stored != base) {
+                            data[idx] = withBlockId(voxel, base);
+                            changed++;
+                        }
+                        continue;
+                    }
+
                     BlockState state = mapper.getBlockStateFromBlockId(base);
                     if (state == null) {
                         continue;
@@ -206,8 +235,7 @@ public final class SeasonalSnowRefresher {
                         continue;
                     }
 
-                    int wanted = want ? SeasonalSnowIds.mark(base) : base;
-                    data[idx] = (voxel & ~BLOCK_ID_MASK) | ((wanted & ((1L << 20) - 1)) << 27);
+                    data[idx] = withBlockId(voxel, want ? SeasonalSnowIds.mark(base) : base);
                     changed++;
                 }
             }
