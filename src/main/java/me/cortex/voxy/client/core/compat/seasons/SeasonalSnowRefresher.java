@@ -356,7 +356,13 @@ public final class SeasonalSnowRefresher {
                                 Logger.error("Seasonal snow refresh failed on "
                                         + WorldEngine.pprintPos(key), t);
                             } finally {
-                                section.release();
+                                //Every stored section passes through here exactly once and a pass
+                                //visits far more of them than the cache holds, so keeping them would
+                                //evict everything anyone else is using. A section this walk rewrote
+                                //is unaffected: it is dirty, so it exits through the save queue and
+                                //re-enters the cache from there, which is right, since the rewritten
+                                //ones are the ones about to be re-meshed.
+                                section.release(WorldSection.RELEASE_HINT_DONT_CACHE);
                             }
                         }
                         long done = scannedA.incrementAndGet();
@@ -525,6 +531,8 @@ public final class SeasonalSnowRefresher {
             }
         } finally {
             if (above != null) {
+                //Kept, unlike the section itself: keys are sorted by distance and then by x, z, y,
+                //so a column is walked bottom up with nothing in between, and this is the next key
                 above.release();
             }
         }

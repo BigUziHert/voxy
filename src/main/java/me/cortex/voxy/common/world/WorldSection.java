@@ -137,6 +137,10 @@ public final class WorldSection {
 
 
     public static int RELEASE_HINT_POSSIBLE_REUSE = 1;
+    //Do not put this section in the secondary lru on unload, hand its array straight back instead.
+    //For a caller that is walking far more sections than the cache holds and will not be coming
+    //back to them: without it such a walk evicts everything else on its way past.
+    public static final int RELEASE_HINT_DONT_CACHE = 2;
     //Unload but specify possible reuse hints
     public int release(int hints) {
         return release(true, hints);

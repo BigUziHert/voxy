@@ -279,18 +279,25 @@ public class ActiveSectionTracker {
 
         WorldSection aa = null;
         if (sec != null) {
-            long stamp2 = this.lruLock.writeLock();
-            lock.unlockWrite(stamp);
-            WorldSection a = this.lruSecondaryCache.put(section.key, section);
-            if (a != null) {
-                throw new IllegalStateException("duplicate sections in cache is impossible");
+            if ((hints & WorldSection.RELEASE_HINT_DONT_CACHE) != 0) {
+                //Asked not to keep it. It has already been removed from the loaded cache and freed
+                //above, so it is in exactly the state an evicted lru entry is in, and it takes the
+                //same exit: skip the lru and hand its array straight back to the reuse pool.
+                lock.unlockWrite(stamp);
+                aa = sec;
+            } else {
+                long stamp2 = this.lruLock.writeLock();
+                lock.unlockWrite(stamp);
+                WorldSection a = this.lruSecondaryCache.put(section.key, section);
+                if (a != null) {
+                    throw new IllegalStateException("duplicate sections in cache is impossible");
+                }
+                //If cache is bigger than its ment to be, remove the least recently used and free it
+                if (this.lruSize < this.lruSecondaryCache.size()) {
+                    aa = this.lruSecondaryCache.removeFirst();
+                }
+                this.lruLock.unlockWrite(stamp2);
             }
-            //If cache is bigger than its ment to be, remove the least recently used and free it
-            if (this.lruSize < this.lruSecondaryCache.size()) {
-                aa = this.lruSecondaryCache.removeFirst();
-            }
-            this.lruLock.unlockWrite(stamp2);
-
         } else {
             lock.unlockWrite(stamp);
         }
