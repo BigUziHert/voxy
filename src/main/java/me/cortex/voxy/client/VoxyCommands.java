@@ -172,7 +172,8 @@ public class VoxyCommands {
                     : player.blockPosition().below();
         }
         var out = new java.util.ArrayList<String>();
-        out.add("seasonal snow at " + pos.getX() + " " + pos.getY() + " " + pos.getZ() + ":");
+        out.add("seasonal snow at x=" + pos.getX() + " z=" + pos.getZ()
+                + ", looking at or below y=" + pos.getY() + ":");
         me.cortex.voxy.client.core.compat.seasons.SeasonalSnow.probe(level, pos, out);
         send(ctx, out);
         return 0;

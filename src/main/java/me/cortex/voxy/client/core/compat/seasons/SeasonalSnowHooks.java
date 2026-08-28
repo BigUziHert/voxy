@@ -378,6 +378,17 @@ final class SeasonalSnowHooks {
     /** What EclipticSeasons would answer for the real block at pos, for comparing against the lod. */
     static void describeVanilla(Level level, BlockPos pos, List<String> out) {
         try {
+            //Same as the lod side: the height asked for is a hint. Drop to the surface when it is air
+            if (level.getBlockState(pos).isAir()) {
+                int surface = level.getHeight(Heightmap.Types.MOTION_BLOCKING, pos.getX(), pos.getZ()) - 1;
+                if (surface > level.getMinBuildHeight()) {
+                    pos = new BlockPos(pos.getX(), surface, pos.getZ());
+                    out.add("(nothing at that height, reading the surface at y=" + surface + " instead)");
+                } else {
+                    out.add("the real block here: the chunk is not loaded, so EclipticSeasons cannot be asked");
+                    return;
+                }
+            }
             BlockState state = level.getBlockState(pos);
             Holder<Biome> biome = level.getBiome(pos);
             String name = biome.unwrapKey().map(k -> k.location().toString()).orElse("?");

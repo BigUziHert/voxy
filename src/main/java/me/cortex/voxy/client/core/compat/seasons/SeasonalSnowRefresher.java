@@ -396,23 +396,32 @@ public final class SeasonalSnowRefresher {
         boolean[] tried = new boolean[cache.length];
 
         for (int lvl = 0; lvl <= WorldEngine.MAX_LOD_LAYER; lvl++) {
+            //The height asked for is a hint, not the answer. Nobody reads an exact ground y off F3
+            //while flying, and every level here has a different idea of where the ground is anyway,
+            //so each one finds its own topmost solid voxel at or below that height.
+            int groundY = solidAtOrBelow(engine, lvl, target.getX(), target.getY(), target.getZ());
+            if (groundY == Integer.MIN_VALUE) {
+                out.add("lod " + lvl + ": nothing solid stored in this column below y=" + target.getY());
+                continue;
+            }
             int sx = target.getX() >> (5 + lvl);
-            int sy = target.getY() >> (5 + lvl);
+            int sy = groundY >> (5 + lvl);
             int sz = target.getZ() >> (5 + lvl);
             int vx = (target.getX() >> lvl) & 31;
-            int vy = (target.getY() >> lvl) & 31;
+            int vy = (groundY >> lvl) & 31;
             int vz = (target.getZ() >> lvl) & 31;
+            String at = "lod " + lvl + " (y=" + groundY + "): ";
 
             WorldSection section = engine.acquireIfExists(WorldEngine.getWorldSectionId(lvl, sx, sy, sz));
             if (section == null) {
-                out.add("lod " + lvl + ": nothing stored here");
+                out.add(at + "nothing stored here");
                 continue;
             }
             WorldSection above = null;
             try {
                 long[] data = section._unsafeGetRawDataArray();
                 if (data == null) {
-                    out.add("lod " + lvl + ": section is empty");
+                    out.add(at + "section is empty");
                     continue;
                 }
                 long voxel = data[WorldSection.getIndex(vx, vy, vz)];
@@ -427,7 +436,7 @@ public final class SeasonalSnowRefresher {
                     above = engine.acquireIfExists(WorldEngine.getWorldSectionId(lvl, sx, sy + 1, sz));
                     long[] aboveData = above == null ? null : above._unsafeGetRawDataArray();
                     if (aboveData == null) {
-                        out.add("lod " + lvl + ": " + describeBlock(mapper, base, stateCount, marked)
+                        out.add(at + describeBlock(mapper, base, stateCount, marked)
                                 + ", nothing stored above it so it is never touched");
                         continue;
                     }
@@ -441,12 +450,12 @@ public final class SeasonalSnowRefresher {
                         ? mapper.getBiomeEntries()[biomeId].biome : ("#" + biomeId);
 
                 if (base <= 0 || base >= stateCount) {
-                    out.add("lod " + lvl + ": air or an unreadable id (" + stored + ")");
+                    out.add(at + "air or an unreadable id (" + stored + ")");
                     continue;
                 }
                 BlockState state = mapper.getBlockStateFromBlockId(base);
                 if (state == null) {
-                    out.add("lod " + lvl + ": id " + base + " is not a block in this world");
+                    out.add(at + "id " + base + " is not a block in this world");
                     continue;
                 }
 
@@ -456,7 +465,7 @@ public final class SeasonalSnowRefresher {
                 int reason = SeasonalSnowHooks.explain(level, mapper, state, aboveVoxel, biome, pos,
                         stateCount, notSnowyNearGlow, glowLevel, snowyTree);
 
-                out.add("lod " + lvl + ": " + describeBlock(mapper, base, stateCount, marked)
+                out.add(at + describeBlock(mapper, base, stateCount, marked)
                         + " in " + biomeName
                         + ", sky " + (lightAbove & 0xF) + " block " + ((lightAbove >> 4) & 0xF)
                         + " above -> " + REASON_NAMES[reason]);
@@ -467,6 +476,48 @@ public final class SeasonalSnowRefresher {
                 section.release();
             }
         }
+    }
+
+    /**
+     * The topmost non air voxel in this column at or below a height, at one lod level. A height read
+     * off F3 is whatever the player happened to be standing or flying at, and the ground under it is
+     * what the question is actually about.
+     */
+    private static int solidAtOrBelow(WorldEngine engine, int lvl, int bx, int by, int bz) {
+        int step = 1 << lvl;
+        int sx = bx >> (5 + lvl);
+        int sz = bz >> (5 + lvl);
+        int vx = (bx >> lvl) & 31;
+        int vz = (bz >> lvl) & 31;
+        int heldSy = Integer.MIN_VALUE;
+        WorldSection held = null;
+        try {
+            for (int y = by; y > by - 640; y -= step) {
+                int sy = y >> (5 + lvl);
+                if (sy != heldSy) {
+                    if (held != null) {
+                        held.release();
+                    }
+                    held = engine.acquireIfExists(WorldEngine.getWorldSectionId(lvl, sx, sy, sz));
+                    heldSy = sy;
+                }
+                if (held == null) {
+                    continue;
+                }
+                long[] data = held._unsafeGetRawDataArray();
+                if (data == null) {
+                    continue;
+                }
+                if (!Mapper.isAir(data[WorldSection.getIndex(vx, (y >> lvl) & 31, vz)])) {
+                    return y;
+                }
+            }
+        } finally {
+            if (held != null) {
+                held.release();
+            }
+        }
+        return Integer.MIN_VALUE;
     }
 
     private static String describeBlock(Mapper mapper, int base, int stateCount, boolean marked) {
