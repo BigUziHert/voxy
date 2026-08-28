@@ -228,8 +228,18 @@ final class SeasonalSnowHooks {
 
         for (Direction face : FACES) {
             SingleThreadedRandomSource random = new SingleThreadedRandomSource(SEED);
-            List<BakedQuad> quads = ExtraModelManager.cancelTop(context, model, level, state, BlockPos.ZERO,
-                    face, random, SEED, model.getQuads(state, face, random), List.of());
+            List<BakedQuad> raw = model.getQuads(state, face, random);
+            //cancelTop culls upward facing quads, and it is right to: its job is to take the top off
+            //the block underneath so the snow can sit where it was. It is being handed the wrong
+            //list here though. Voxy has already baked the block itself and all we are adding is the
+            //snow, so the quads it is given to cull are the snow's own, and for a plain full block
+            //on the up face that is every one of them. Ground came back bare while the plants
+            //standing on it kept their snow, because a plant's cross model has nothing facing up.
+            //The sides still go through it, where that branch cannot fire and its other handling
+            //still applies.
+            List<BakedQuad> quads = (face == Direction.UP || face == null) ? raw
+                    : ExtraModelManager.cancelTop(context, model, level, state, BlockPos.ZERO,
+                            face, random, SEED, raw, List.of());
             for (BakedQuad quad : quads) {
                 (type == RenderType.translucent() ? translucentVC : opaqueVC).quad(quad, forceSolid, layer);
             }

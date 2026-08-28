@@ -127,6 +127,65 @@ public final class SeasonalSnowRefresher {
     private static volatile Run active;
     private static volatile String status = "idle";
     public static volatile long lastPassEndMillis = 0;
+    /** How long the last pass took, so the caller can space passes against their real cost. */
+    public static volatile long lastPassDurationMillis = 0;
+
+    /**
+     * Sections holding nothing that any season could ever snow: no voxel that is both open to the
+     * sky and a block EclipticSeasons snows, and none currently marked.
+     *
+     * That does not depend on the season. It depends on the terrain and its light, which only change
+     * when the section is ingested again. So once a pass has established it, every later pass can
+     * skip the section without reading it back off disk, and reading them back is what makes a pass
+     * expensive: a store is overwhelmingly underground, and underground can never snow.
+     *
+     * Anything that ingests a section takes it back out of here, so a section that changes is looked
+     * at again. Cleared outright when the world changes, or when the snow config a pass classified
+     * against is no longer the one in force.
+     */
+    private static final Object BARREN_LOCK = new Object();
+    private static final it.unimi.dsi.fastutil.longs.LongOpenHashSet barren =
+            new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+    private static WorldEngine barrenEngine = null;
+    private static long barrenConfig = Long.MIN_VALUE;
+
+    private static boolean isBarren(long key) {
+        synchronized (BARREN_LOCK) {
+            return barren.contains(key);
+        }
+    }
+
+    private static void setBarren(long key) {
+        synchronized (BARREN_LOCK) {
+            barren.add(key);
+        }
+    }
+
+    /** Called by ingest: this section has been rewritten, so whatever a pass concluded is stale. */
+    public static void sectionIngested(int sectionX, int sectionY, int sectionZ) {
+        synchronized (BARREN_LOCK) {
+            if (barren.isEmpty()) {
+                return;
+            }
+            barren.remove(WorldEngine.getWorldSectionId(0, sectionX >> 1, sectionY >> 1, sectionZ >> 1));
+        }
+    }
+
+    public static int barrenCount() {
+        synchronized (BARREN_LOCK) {
+            return barren.size();
+        }
+    }
+
+    private static void validateBarren(WorldEngine engine, long configToken) {
+        synchronized (BARREN_LOCK) {
+            if (barrenEngine != engine || barrenConfig != configToken) {
+                barren.clear();
+                barrenEngine = engine;
+                barrenConfig = configToken;
+            }
+        }
+    }
 
     public static synchronized boolean isRunning() {
         return worker != null && worker.isAlive();
@@ -259,6 +318,10 @@ public final class SeasonalSnowRefresher {
             boolean notSnowyNearGlow = SeasonalSnowHooks.cfgNotSnowyNearGlow();
             int glowLevel = SeasonalSnowHooks.cfgGlowLevel();
             boolean snowyTree = SeasonalSnowHooks.cfgSnowyTree();
+            //What a section was classified barren against. Change any of it and the classification
+            //has to be thrown away, since it is these that decide what can ever be snowed.
+            validateBarren(engine, (notSnowyNearGlow ? 1L : 0) | ((long) glowLevel << 1)
+                    | (snowyTree ? 1L << 8 : 0));
 
             //Level 0 only, see the class comment. Collect first: the storage iterator holds a cursor
             //open and acquiring sections underneath it is not something the backend promises to
@@ -319,6 +382,8 @@ public final class SeasonalSnowRefresher {
                     new java.util.concurrent.atomic.AtomicLong();
             final java.util.concurrent.atomic.AtomicLong scannedA =
                     new java.util.concurrent.atomic.AtomicLong();
+            final java.util.concurrent.atomic.AtomicLong skippedA =
+                    new java.util.concurrent.atomic.AtomicLong();
             final boolean fNotSnowyNearGlow = notSnowyNearGlow;
             final int fGlowLevel = glowLevel;
             final boolean fSnowyTree = snowyTree;
@@ -335,11 +400,20 @@ public final class SeasonalSnowRefresher {
                             return;
                         }
                         long key = keys.getLong(i);
+                        if (isBarren(key)) {
+                            skippedA.incrementAndGet();
+                            continue;//Never reads it, which is the whole point
+                        }
                         WorldSection section = engine.acquireIfExists(key);
                         if (section != null) {
                             try {
-                                int changed = refreshSection(engine, level, mapper, biomes, section,
+                                long result = refreshSection(engine, level, mapper, biomes, section,
                                         fNotSnowyNearGlow, fGlowLevel, fSnowyTree);
+                                int changed = (int) result;
+                                if ((result & CANDIDATE_BIT) == 0) {
+                                    //Nothing in it any season could snow, so no later pass needs it
+                                    setBarren(key);
+                                }
                                 if (changed > 0) {
                                     flippedA.addAndGet(changed);
                                     rewrittenA.incrementAndGet();
@@ -367,7 +441,8 @@ public final class SeasonalSnowRefresher {
                         }
                         long done = scannedA.incrementAndGet();
                         if ((done % SECTIONS_PER_BATCH) == 0) {
-                            status = describeProgress((int) done, total, flippedA.get(), startedAt);
+                            status = describeProgress((int) (done + skippedA.get()), total,
+                                    flippedA.get(), startedAt);
                             //Give a slice back regularly so a pass cannot sit on its cores throughout
                             try {
                                 Thread.sleep(BATCH_PAUSE_MILLIS);
@@ -397,6 +472,7 @@ public final class SeasonalSnowRefresher {
 
             status = "done: " + flipped + " voxels over " + rewritten + " sections in "
                     + elapsed(startedAt)
+                    + (skippedA.get() == 0 ? "" : ", " + skippedA.get() + " skipped as unsnowable")
                     + (pendingDirty.isEmpty() ? "" : ", " + pendingDirty.size() + " rebuilds still landing");
             Logger.info("Seasonal snow refresh " + status);
             finished.set("Seasonal snow refresh " + status);
@@ -410,6 +486,7 @@ public final class SeasonalSnowRefresher {
             Logger.error("Seasonal snow refresh failed", t);
         } finally {
             lastPassEndMillis = System.currentTimeMillis();
+            lastPassDurationMillis = lastPassEndMillis - startedAt;
             if (referenced) {
                 try {
                     engine.releaseRef();
@@ -437,10 +514,14 @@ public final class SeasonalSnowRefresher {
         return ms < 1000 ? ms + "ms" : (ms / 1000) + "s";
     }
 
-    /** @return how many voxels were rewritten */
-    private static int refreshSection(WorldEngine engine, Level level, Mapper mapper, BiomeCache biomes,
-                                      WorldSection section, boolean notSnowyNearGlow, int glowLevel,
-                                      boolean snowyTree) {
+    //Set on the result when the section held at least one voxel a season could snow, so the caller
+    //knows whether it is worth ever reading again. The low 32 bits are the change count.
+    private static final long CANDIDATE_BIT = 1L << 32;
+
+    /** @return the change count, with CANDIDATE_BIT set when anything here is ever snowable */
+    private static long refreshSection(WorldEngine engine, Level level, Mapper mapper, BiomeCache biomes,
+                                       WorldSection section, boolean notSnowyNearGlow, int glowLevel,
+                                       boolean snowyTree) {
         long[] data = section._unsafeGetRawDataArray();
         if (data == null) {
             return 0;
@@ -450,6 +531,7 @@ public final class SeasonalSnowRefresher {
         boolean aboveResolved = false;
         long[] aboveData = null;
         int changed = 0;
+        boolean candidate = false;
 
         try {
             for (int y = 0; y < SECTION_WIDTH; y++) {
@@ -466,6 +548,8 @@ public final class SeasonalSnowRefresher {
                         if (base <= 0 || base >= stateCount) {
                             continue;//An id this world cannot resolve, leave it alone
                         }
+                        //Snow already on it is reason enough to come back: it may need taking off
+                        candidate |= storedSnowy;
 
                         long aboveVoxel;
                         if (y + 1 < SECTION_WIDTH) {
@@ -505,9 +589,14 @@ public final class SeasonalSnowRefresher {
                         BlockPos pos = new BlockPos(
                                 (section.x << 5) + x, (section.y << 5) + y, (section.z << 5) + z);
 
-                        int verdict = SeasonalSnowHooks.decide(level, state, aboveLight,
+                        int reason = SeasonalSnowHooks.explain(level, state, aboveLight,
                                 SeasonalSnowHooks.aboveStateOf(mapper, aboveVoxel, stateCount), biome,
                                 pos, notSnowyNearGlow, glowLevel, snowyTree);
+                        //Open to the sky and a kind of block EclipticSeasons snows. Whether it snows
+                        //today is the season's business, but that it could is the terrain's, and
+                        //that is what makes this section worth reading again next time.
+                        candidate |= reason != R_NO_NOT_A_SNOW_BLOCK;
+                        int verdict = verdictOf(reason);
                         if (verdict == UNKNOWN) {
                             continue;
                         }
@@ -536,7 +625,7 @@ public final class SeasonalSnowRefresher {
                 above.release();
             }
         }
-        return changed;
+        return (changed & 0xFFFFFFFFL) | (candidate ? CANDIDATE_BIT : 0);
     }
 
     //One set of pyramid buffers per walker thread: ~37KiB that a pass rewriting thousands of

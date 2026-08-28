@@ -48,6 +48,10 @@ public final class SeasonalSnow {
 
     private static void markSection(long[] data, Mapper mapper, VoxelizedSection section,
                                     IAboveSectionData above) {
+        //Whatever a refresh concluded about this section is about terrain that has just been
+        //rewritten, so it has to be looked at again. Said before the enabled check on purpose: the
+        //conclusion is stale either way.
+        SeasonalSnowRefresher.sectionIngested(section.x, section.y, section.z);
         if (!enabled()) {
             return;
         }
@@ -74,9 +78,16 @@ public final class SeasonalSnow {
     private static volatile int lastTerm = Integer.MIN_VALUE;
     private static int tickCounter = 0;
 
-    //A season change is broadcast as a run of updates while it is snowing, and each pass walks the
-    //whole store, so passes are spaced out rather than queued up behind each other
+    //A season change is broadcast as a run of updates all through a snowfall or a melt, and a pass
+    //walks the whole store, so passes are spaced out rather than run back to back. Spaced against
+    //what a pass actually costs rather than a flat number: four times the last one's duration keeps
+    //the walk under a quarter of the time even on a store where it is slow, and the floor keeps it
+    //from running constantly on a store where it is fast.
     private static final long AUTO_COOLDOWN_MILLIS = 60_000;
+
+    private static long autoCooldownMillis() {
+        return Math.max(AUTO_COOLDOWN_MILLIS, SeasonalSnowRefresher.lastPassDurationMillis * 4);
+    }
 
     public static void onClientTick(net.minecraft.world.level.Level level) {
         //Always, even with the feature off: a run that was cancelled or a world that changed can
@@ -105,7 +116,7 @@ public final class SeasonalSnow {
         if (SeasonalSnowRefresher.isRunning()) {
             return;
         }
-        if (System.currentTimeMillis() - SeasonalSnowRefresher.lastPassEndMillis < AUTO_COOLDOWN_MILLIS) {
+        if (System.currentTimeMillis() - SeasonalSnowRefresher.lastPassEndMillis < autoCooldownMillis()) {
             return;
         }
 
@@ -226,6 +237,10 @@ public final class SeasonalSnow {
         out.add("refresh: " + (SeasonalSnowRefresher.isRunning() ? "running, " : "")
                 + SeasonalSnowRefresher.describe()
                 + ", " + SeasonalSnowRefresher.pendingRebuilds() + " rebuilds queued");
+        out.add("sections retired as unsnowable: " + SeasonalSnowRefresher.barrenCount()
+                + ", last pass took " + (SeasonalSnowRefresher.lastPassDurationMillis / 1000)
+                + "s so the next automatic one is at least " + (autoCooldownMillis() / 1000)
+                + "s after it");
         if (!MOD_PRESENT || level == null) {
             return;
         }
